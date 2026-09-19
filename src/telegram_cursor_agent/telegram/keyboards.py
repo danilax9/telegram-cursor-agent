@@ -4,7 +4,10 @@ from uuid import UUID
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from telegram_cursor_agent.agent.session_format import short_session_id, workspace_label
+from telegram_cursor_agent.agent.session_format import (
+    session_display_name,
+    workspace_label,
+)
 from telegram_cursor_agent.database.models.session import AgentSession
 
 
@@ -40,7 +43,7 @@ def session_resume_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarku
     for index, session in enumerate(sessions, start=1):
         marker = "● " if session.status == "active" else ""
         label = (
-            f"{marker}{index}. {short_session_id(session.id)} — "
+            f"{marker}{index}. {session_display_name(session)} — "
             f"{workspace_label(session.workspace_path)}"
         )
         rows.append([
@@ -56,7 +59,7 @@ def session_delete_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarku
     rows: list[list[InlineKeyboardButton]] = []
     for index, session in enumerate(sessions, start=1):
         label = (
-            f"{index}. {short_session_id(session.id)} — "
+            f"{index}. {session_display_name(session)} — "
             f"{workspace_label(session.workspace_path)}"
         )
         rows.append([

@@ -94,6 +94,32 @@ async def test_resolve_selector_by_index(
 
 
 @pytest.mark.asyncio
+async def test_set_title_if_empty(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    user_id = await _create_user(db_session)
+    service = SessionService(db_session, test_settings)
+    active = await service.get_or_create_active(user_id, str(test_settings.projects_root))
+
+    updated = await service.set_title_if_empty(
+        active.id,
+        "добавь /limits",
+        "Команда /limits показывает лимиты Cursor.",
+    )
+    assert updated is not None
+    assert updated.title
+    assert len(updated.title) <= 64
+
+    unchanged = await service.set_title_if_empty(
+        active.id,
+        "другой запрос",
+        "другой ответ",
+    )
+    assert unchanged is not None
+    assert unchanged.title == updated.title
+
+
+@pytest.mark.asyncio
 async def test_resolve_selector_not_found(
     db_session: AsyncSession, test_settings: Settings
 ) -> None:

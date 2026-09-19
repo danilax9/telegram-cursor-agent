@@ -134,3 +134,17 @@ class SessionService:
         self, session_id: uuid.UUID, cursor_chat_id: str
     ) -> AgentSession | None:
         return await self._sessions.update_cursor_chat_id(session_id, cursor_chat_id)
+
+    async def set_title_if_empty(
+        self,
+        session_id: uuid.UUID,
+        user_message: str,
+        assistant_message: str,
+    ) -> AgentSession | None:
+        from telegram_cursor_agent.agent.session_title import generate_session_title
+
+        agent_session = await self._sessions.get_by_id(session_id)
+        if agent_session is None or agent_session.title:
+            return agent_session
+        title = generate_session_title(user_message, assistant_message)
+        return await self._sessions.update_title(session_id, title)

@@ -109,6 +109,16 @@ class SessionRepository:
         await self._session.flush()
         return agent_session
 
+    async def update_title(
+        self, session_id: uuid.UUID, title: str
+    ) -> AgentSession | None:
+        agent_session = await self.get_by_id(session_id)
+        if agent_session is None:
+            return None
+        agent_session.title = title[:255]
+        await self._session.flush()
+        return agent_session
+
     async def touch(self, session_id: uuid.UUID) -> None:
         agent_session = await self.get_by_id(session_id)
         if agent_session:

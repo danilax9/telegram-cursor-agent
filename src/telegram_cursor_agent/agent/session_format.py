@@ -23,6 +23,12 @@ def workspace_label(workspace_path: str) -> str:
     return Path(workspace_path).name or workspace_path
 
 
+def session_display_name(session: AgentSession) -> str:
+    if session.title:
+        return session.title
+    return short_session_id(session.id)
+
+
 def format_last_active(last_active_at: datetime | None) -> str:
     if last_active_at is None:
         return "никогда"
@@ -51,10 +57,11 @@ def format_session_line(
         status = " (архив)"
     elif session.status == "deleted":
         status = " (удалена)"
+    name = session_display_name(session)
+    id_hint = "" if session.title else f" (`{short_session_id(session.id)}`)"
     return (
-        f"{prefix}{active_marker}`{short_session_id(session.id)}` — "
+        f"{prefix}{active_marker}**{name}**{id_hint} — "
         f"{workspace_label(session.workspace_path)} — "
-        f"chat `{short_chat_id(session.cursor_chat_id)}` — "
         f"{format_last_active(session.last_active_at)}{status}"
     )
 
