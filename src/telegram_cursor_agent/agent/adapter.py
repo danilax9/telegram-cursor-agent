@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from telegram_cursor_agent.agent.prompts import TELEGRAM_RULE_CONTENT
+from telegram_cursor_agent.agent.stream_progress import StreamProgressHandler
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.execution.runner import ProcessRunner
 
-_PROGRESS_EVENT_TYPES = frozenset({"assistant"})
 _OUTPUT_SKIP_EVENT_TYPES = frozenset(
     {"user", "system", "thinking", "tool_call", "assistant"}
 )
@@ -51,6 +51,7 @@ class CursorAgentAdapter:
             "--print",
             "--output-format",
             "stream-json",
+            "--stream-partial-output",
             "--workspace",
             workspace,
             "--trust",
@@ -76,15 +77,17 @@ class CursorAgentAdapter:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
     ) -> AgentResult:
+        progress_handler: StreamProgressHandler | None = None
+        if on_progress is not None:
+            progress_handler = StreamProgressHandler(on_progress, self._event_text)
+
         async def handle_line(line: str) -> None:
-            if on_progress is None:
+            if progress_handler is None:
                 return
             data = self._parse_stream_line(line)
             if data is None:
                 return
-            progress_text = self._progress_text(data)
-            if progress_text:
-                await on_progress(progress_text)
+            await progress_handler.handle(data)
 
         command = self.build_command(workspace, prompt, resume_chat_id)
         result = await self._runner.run(
@@ -95,6 +98,8 @@ class CursorAgentAdapter:
             on_process_start=on_process_start,
         )
         events, output, chat_id = self._parse_stream_output(result.stdout)
+        if progress_handler is not None and progress_handler.last_assistant:
+            output = progress_handler.last_assistant
         return AgentResult(
             output=output or result.stdout,
             cursor_chat_id=chat_id or resume_chat_id,
@@ -123,20 +128,6 @@ class CursorAgentAdapter:
             return None
         return parsed
 
-    @staticmethod
-    def _progress_text(data: dict[str, Any]) -> str:
-        event_type = str(data.get("type", data.get("event", "")))
-        if event_type not in _PROGRESS_EVENT_TYPES:
-            return ""
-        content = CursorAgentAdapter._event_text(data, event_type).strip()
-        if not content:
-            return ""
-        # With stream-json (without partial output) each assistant event is one
-        # complete planning step between tool calls.
-        if data.get("model_call_id"):
-            return ""
-        return content
-
     def _parse_stream_output(
         self, stdout: str
     ) -> tuple[list[AgentStreamEvent], str, str | None]:
@@ -159,10 +150,12 @@ class CursorAgentAdapter:
                 chat_id = str(data["session_id"])
 
             events.append(AgentStreamEvent(event_type=event_type, content=content, raw=data))
-            if event_type == "result" and content:
+            if event_type == "assistant" and content:
                 text_parts = [content]
-            elif event_type not in _OUTPUT_SKIP_EVENT_TYPES and content:
+            elif event_type in {"text", "done"} and content:
                 text_parts.append(content)
+            elif event_type == "result" and content and not text_parts:
+                text_parts = [content]
 
         return events, "\n".join(text_parts), chat_id
 

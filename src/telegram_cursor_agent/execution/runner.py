@@ -65,8 +65,14 @@ class ProcessRunner:
             return b"".join(chunks)
 
         async def read_stderr() -> bytes:
+            chunks: list[bytes] = []
             assert process.stderr is not None
-            return await process.stderr.read()
+            while True:
+                chunk = await process.stderr.read(_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
 
         try:
             stdout_bytes, stderr_bytes, _returncode = await asyncio.wait_for(

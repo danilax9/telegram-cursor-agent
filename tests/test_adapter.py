@@ -11,6 +11,7 @@ def test_build_command_basic(test_settings, runner) -> None:
         "--print",
         "--output-format",
         "stream-json",
+        "--stream-partial-output",
         "--workspace",
         "/workspace/proj",
         "--trust",
@@ -27,45 +28,29 @@ def test_build_command_with_resume(test_settings, runner) -> None:
     assert "--resume" in cmd
     assert "chat-abc" in cmd
     assert cmd[-1] == "continue"
-    assert "--stream-partial-output" not in cmd
 
 
-def test_progress_text_uses_assistant_steps(test_settings, runner) -> None:
-    adapter = CursorAgentAdapter(test_settings, runner)
-    step = {
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Проверю живой сайт."}],
-        },
-    }
-    assert adapter._progress_text(step) == "Проверю живой сайт."
-    assert adapter._progress_text({"type": "user", "message": {"content": []}}) == ""
-    duplicate = {
-        "type": "assistant",
-        "model_call_id": "x",
-        "message": {"content": [{"type": "text", "text": "skip"}]},
-    }
-    assert adapter._progress_text(duplicate) == ""
-
-
-def test_parse_stream_output_uses_result_only(test_settings, runner) -> None:
+def test_parse_stream_output_uses_last_assistant(test_settings, runner) -> None:
     adapter = CursorAgentAdapter(test_settings, runner)
     user_event = (
         '{"type":"user","message":{"role":"user",'
         '"content":[{"type":"text","text":"secret prompt"}]}}\n'
     )
-    assistant_event = (
+    step_event = (
+        '{"type":"assistant","model_call_id":"c1","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"step one"}]}}\n'
+    )
+    final_event = (
         '{"type":"assistant","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"step"}]}}\n'
+        '"content":[{"type":"text","text":"Final answer"}]}}\n'
     )
     result_event = (
-        '{"type":"result","subtype":"success","result":"Final answer",'
+        '{"type":"result","subtype":"success","result":"step oneFinal answer",'
         '"session_id":"sess-123"}\n'
     )
-    stdout = user_event + assistant_event + result_event
+    stdout = user_event + step_event + final_event + result_event
     events, output, chat_id = adapter._parse_stream_output(stdout)
-    assert len(events) == 3
+    assert len(events) == 4
     assert output == "Final answer"
     assert chat_id == "sess-123"
 
