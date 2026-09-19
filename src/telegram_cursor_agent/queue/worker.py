@@ -17,6 +17,7 @@ from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.database.session import create_engine, create_session_factory
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.queue.task_queue import TaskQueue, create_redis
+from telegram_cursor_agent.telegram.live_message import LiveMessageNotifier
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 logger = get_logger(__name__)
@@ -98,10 +99,18 @@ class TaskWorker:
             )
 
             task_id_str = str(task_id)
+            live: LiveMessageNotifier | None = None
+            if user is not None and task.task_type == "agent_prompt":
+                live = LiveMessageNotifier(self._notifier, self._settings, user.telegram_id)
+
+            async def on_progress(text: str) -> None:
+                if live is not None:
+                    await live.update(text)
+
             try:
                 result = await self._execute(
                     task,
-                    (lambda text: self._notifier.send(user.telegram_id, text)) if user else None,
+                    on_progress if live is not None else None,
                 )
                 if result == "Task cancelled.":
                     await tasks.mark_cancelled(task_id)
@@ -110,7 +119,10 @@ class TaskWorker:
                 else:
                     await tasks.mark_completed(task_id, result)
                     if user is not None:
-                        await self._notifier.send(user.telegram_id, result)
+                        if live is not None and live.message_id is not None:
+                            await live.finalize(result)
+                        else:
+                            await self._notifier.send(user.telegram_id, result)
             except Exception as exc:
                 logger.exception("task_failed", task_id=task_id_str)
                 await tasks.mark_failed(task_id, str(exc))

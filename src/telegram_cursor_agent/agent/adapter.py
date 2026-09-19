@@ -6,9 +6,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from telegram_cursor_agent.agent.prompts import SYSTEM_PROMPT
+from telegram_cursor_agent.agent.prompts import TELEGRAM_RULE_CONTENT
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.execution.runner import ProcessRunner
+
+_PROGRESS_EVENT_TYPES = frozenset({"assistant"})
+_OUTPUT_SKIP_EVENT_TYPES = frozenset(
+    {"user", "system", "thinking", "tool_call", "assistant"}
+)
 
 
 @dataclass
@@ -40,12 +45,12 @@ class CursorAgentAdapter:
         prompt: str,
         resume_chat_id: str | None = None,
     ) -> list[str]:
+        self._ensure_telegram_rules(workspace)
         cmd = [
             self._settings.cursor_agent_bin,
             "--print",
             "--output-format",
             "stream-json",
-            "--stream-partial-output",
             "--workspace",
             workspace,
             "--trust",
@@ -60,7 +65,7 @@ class CursorAgentAdapter:
                 cmd.extend(["--model", model])
         if resume_chat_id:
             cmd.extend(["--resume", resume_chat_id])
-        cmd.append(f"{SYSTEM_PROMPT}\n\nUser request:\n{prompt}")
+        cmd.append(prompt)
         return cmd
 
     async def run_prompt(
@@ -74,15 +79,12 @@ class CursorAgentAdapter:
         async def handle_line(line: str) -> None:
             if on_progress is None:
                 return
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
+            data = self._parse_stream_line(line)
+            if data is None:
                 return
-            if not isinstance(data, dict):
-                return
-            text = self._event_text(data, str(data.get("type", "")))
-            if text and data.get("type") not in {"assistant", "thinking", "result"}:
-                await on_progress(text)
+            progress_text = self._progress_text(data)
+            if progress_text:
+                await on_progress(progress_text)
 
         command = self.build_command(workspace, prompt, resume_chat_id)
         result = await self._runner.run(
@@ -101,6 +103,40 @@ class CursorAgentAdapter:
             cancelled=result.cancelled,
         )
 
+    def _ensure_telegram_rules(self, workspace: str) -> None:
+        rules_dir = Path(workspace) / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rule_file = rules_dir / "telegram-bot.mdc"
+        if not rule_file.exists() or rule_file.read_text() != TELEGRAM_RULE_CONTENT:
+            rule_file.write_text(TELEGRAM_RULE_CONTENT)
+
+    @staticmethod
+    def _parse_stream_line(line: str) -> dict[str, Any] | None:
+        line = line.strip()
+        if not line:
+            return None
+        try:
+            parsed: Any = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
+
+    @staticmethod
+    def _progress_text(data: dict[str, Any]) -> str:
+        event_type = str(data.get("type", data.get("event", "")))
+        if event_type not in _PROGRESS_EVENT_TYPES:
+            return ""
+        content = CursorAgentAdapter._event_text(data, event_type).strip()
+        if not content:
+            return ""
+        # With stream-json (without partial output) each assistant event is one
+        # complete planning step between tool calls.
+        if data.get("model_call_id"):
+            return ""
+        return content
+
     def _parse_stream_output(
         self, stdout: str
     ) -> tuple[list[AgentStreamEvent], str, str | None]:
@@ -109,20 +145,11 @@ class CursorAgentAdapter:
         chat_id: str | None = None
 
         for line in stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed: Any = json.loads(line)
-            except json.JSONDecodeError:
-                text_parts.append(line)
+            data = self._parse_stream_line(line)
+            if data is None:
+                text_parts.append(line.strip())
                 continue
 
-            if not isinstance(parsed, dict):
-                text_parts.append(line)
-                continue
-
-            data: dict[str, Any] = parsed
             event_type = str(data.get("type", data.get("event", "unknown")))
             content = self._event_text(data, event_type)
 
@@ -132,11 +159,9 @@ class CursorAgentAdapter:
                 chat_id = str(data["session_id"])
 
             events.append(AgentStreamEvent(event_type=event_type, content=content, raw=data))
-            # Cursor's final result is canonical. Assistant stream events are
-            # partial deltas and must not be duplicated in the Telegram reply.
             if event_type == "result" and content:
                 text_parts = [content]
-            elif event_type not in {"assistant", "thinking"} and content:
+            elif event_type not in _OUTPUT_SKIP_EVENT_TYPES and content:
                 text_parts.append(content)
 
         return events, "\n".join(text_parts), chat_id

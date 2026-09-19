@@ -29,6 +29,34 @@ class TelegramNotifier:
                 # Deliver the content rather than failing the whole task.
                 await self._bot.send_message(telegram_id, chunk, parse_mode=None)
 
+    async def send_live_start(self, telegram_id: int, text: str) -> int:
+        try:
+            message = await self._bot.send_message(telegram_id, text)
+        except TelegramBadRequest:
+            message = await self._bot.send_message(telegram_id, text, parse_mode=None)
+        return message.message_id
+
+    async def edit_live_message(
+        self, telegram_id: int, message_id: int, text: str
+    ) -> None:
+        try:
+            await self._bot.edit_message_text(
+                text, chat_id=telegram_id, message_id=message_id
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            try:
+                await self._bot.edit_message_text(
+                    text,
+                    chat_id=telegram_id,
+                    message_id=message_id,
+                    parse_mode=None,
+                )
+            except TelegramBadRequest as retry_exc:
+                if "message is not modified" not in str(retry_exc).lower():
+                    raise
+
     async def keep_typing(self, telegram_id: int) -> None:
         while True:
             await self._bot.send_chat_action(telegram_id, "typing")
