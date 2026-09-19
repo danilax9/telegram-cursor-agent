@@ -1,13 +1,16 @@
 """Session service tests."""
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
 from telegram_cursor_agent.agent.sessions import SessionError, SessionService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.execution.runner import ProcessRunner
 
 
 async def _create_user(db: AsyncSession) -> uuid.UUID:
@@ -95,28 +98,39 @@ async def test_resolve_selector_by_index(
 
 @pytest.mark.asyncio
 async def test_set_title_if_empty(
-    db_session: AsyncSession, test_settings: Settings
+    db_session: AsyncSession, test_settings: Settings, runner: ProcessRunner
 ) -> None:
     user_id = await _create_user(db_session)
     service = SessionService(db_session, test_settings)
     active = await service.get_or_create_active(user_id, str(test_settings.projects_root))
 
-    updated = await service.set_title_if_empty(
-        active.id,
-        "добавь /limits",
-        "Команда /limits показывает лимиты Cursor.",
-    )
+    with patch.object(
+        CursorAgentAdapter,
+        "generate_session_title",
+        new=AsyncMock(return_value="Limits command"),
+    ):
+        updated = await service.set_title_if_empty(
+            active.id,
+            "добавь /limits",
+            "Команда /limits показывает лимиты Cursor.",
+            runner,
+        )
     assert updated is not None
-    assert updated.title
-    assert len(updated.title) <= 64
+    assert updated.title == "Limits command"
 
-    unchanged = await service.set_title_if_empty(
-        active.id,
-        "другой запрос",
-        "другой ответ",
-    )
+    with patch.object(
+        CursorAgentAdapter,
+        "generate_session_title",
+        new=AsyncMock(return_value="Other title"),
+    ):
+        unchanged = await service.set_title_if_empty(
+            active.id,
+            "другой запрос",
+            "другой ответ",
+            runner,
+        )
     assert unchanged is not None
-    assert unchanged.title == updated.title
+    assert unchanged.title == "Limits command"
 
 
 @pytest.mark.asyncio

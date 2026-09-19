@@ -4,11 +4,14 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
+from telegram_cursor_agent.agent.session_title import DEFAULT_SESSION_TITLE
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.database.models.message import Message
 from telegram_cursor_agent.database.models.session import AgentSession
 from telegram_cursor_agent.database.repositories.message import MessageRepository
 from telegram_cursor_agent.database.repositories.session import SessionRepository
+from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.execution.sandbox import assert_path_allowed
 
 
@@ -140,11 +143,19 @@ class SessionService:
         session_id: uuid.UUID,
         user_message: str,
         assistant_message: str,
+        runner: ProcessRunner,
     ) -> AgentSession | None:
-        from telegram_cursor_agent.agent.session_title import generate_session_title
-
         agent_session = await self._sessions.get_by_id(session_id)
         if agent_session is None or agent_session.title:
             return agent_session
-        title = generate_session_title(user_message, assistant_message)
+
+        adapter = CursorAgentAdapter(self._settings, runner)
+        try:
+            title = await adapter.generate_session_title(
+                str(agent_session.workspace_path),
+                user_message,
+                assistant_message,
+            )
+        except Exception:
+            title = DEFAULT_SESSION_TITLE
         return await self._sessions.update_title(session_id, title)

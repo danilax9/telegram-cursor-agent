@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from telegram_cursor_agent.agent.prompts import TELEGRAM_RULE_CONTENT
+from telegram_cursor_agent.agent.session_title import (
+    DEFAULT_SESSION_TITLE,
+    format_title_prompt,
+    normalize_session_title,
+)
 from telegram_cursor_agent.agent.stream_progress import StreamProgressHandler
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.execution.runner import ProcessRunner
@@ -69,6 +74,31 @@ class CursorAgentAdapter:
         cmd.append(prompt)
         return cmd
 
+    def build_ask_command(
+        self,
+        workspace: str,
+        prompt: str,
+        resume_chat_id: str | None = None,
+    ) -> list[str]:
+        cmd = [
+            self._settings.cursor_agent_bin,
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--mode",
+            "ask",
+            "--workspace",
+            workspace,
+            "--trust",
+            "--force",
+            "--sandbox",
+            "disabled",
+        ]
+        if resume_chat_id:
+            cmd.extend(["--resume", resume_chat_id])
+        cmd.append(prompt)
+        return cmd
+
     async def create_chat(self) -> str:
         command = [self._settings.cursor_agent_bin, "create-chat"]
         result = await self._runner.run(command, sanitize_output=False)
@@ -77,6 +107,32 @@ class CursorAgentAdapter:
             msg = result.stderr.strip() or "Failed to create Cursor chat."
             raise RuntimeError(msg)
         return chat_id
+
+    async def generate_session_title(
+        self,
+        workspace: str,
+        user_message: str,
+        assistant_message: str,
+    ) -> str:
+        """Ask Cursor in a throwaway ask-mode chat for a 2-3 word session title."""
+        chat_id = await self.create_chat()
+        prompt = format_title_prompt(user_message, assistant_message)
+        command = self.build_ask_command(workspace, prompt, resume_chat_id=chat_id)
+        result = await self._runner.run(
+            command,
+            cwd=workspace,
+            sanitize_output=False,
+            timeout_seconds=60.0,
+        )
+        if result.cancelled:
+            raise RuntimeError("Session title generation was cancelled.")
+        if result.returncode not in {0, None}:
+            msg = result.stderr.strip() or "Cursor title generation failed."
+            raise RuntimeError(msg)
+
+        _, output, _ = self._parse_stream_output(result.stdout)
+        title = normalize_session_title(output)
+        return title or DEFAULT_SESSION_TITLE
 
     async def run_prompt(
         self,

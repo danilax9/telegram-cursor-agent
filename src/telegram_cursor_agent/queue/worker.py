@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from redis.asyncio import Redis
 
 from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
-from telegram_cursor_agent.agent.session_title import generate_session_title
+from telegram_cursor_agent.agent.session_title import DEFAULT_SESSION_TITLE
 from telegram_cursor_agent.core.config import get_settings
 from telegram_cursor_agent.core.logging import get_logger, setup_logging
 from telegram_cursor_agent.database.models.task import Task
@@ -219,7 +219,24 @@ class TaskWorker:
                 agent_session = await sessions.get_by_id(session_id)
                 if agent_session is None or agent_session.title:
                     return
-                title = generate_session_title(user_message, assistant_message)
+                workspace = self._resolve_workspace(agent_session.workspace_path)
+
+            adapter = CursorAgentAdapter(self._settings, self._runner)
+            try:
+                title = await adapter.generate_session_title(
+                    workspace,
+                    user_message,
+                    assistant_message,
+                )
+            except Exception:
+                logger.exception("session_title_cursor_failed", session_id=str(session_id))
+                title = DEFAULT_SESSION_TITLE
+
+            async with self._session_factory() as db:
+                sessions = SessionRepository(db)
+                agent_session = await sessions.get_by_id(session_id)
+                if agent_session is None or agent_session.title:
+                    return
                 await sessions.update_title(session_id, title)
                 await db.commit()
                 logger.info(
