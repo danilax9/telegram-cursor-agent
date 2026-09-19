@@ -1,0 +1,41 @@
+"""Upload service tests."""
+
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.services.uploads import UploadService
+
+
+async def test_store_upload(db_session: AsyncSession, test_settings) -> None:
+    users = UserRepository(db_session)
+    user = await users.upsert(telegram_id=12345, username="admin", is_admin=True)
+
+    service = UploadService(db_session, test_settings)
+    upload = await service.store(
+        user_id=user.id,
+        filename="test.py",
+        data=b"print('hello')",
+        mime_type="text/plain",
+    )
+    assert upload.original_filename == "test.py"
+    assert upload.size_bytes == 14
+
+
+async def test_reject_oversized(db_session: AsyncSession, test_settings) -> None:
+    users = UserRepository(db_session)
+    user = await users.upsert(telegram_id=12345, username="admin", is_admin=True)
+
+    limited_settings = test_settings.model_copy(update={"max_upload_bytes": 10})
+    service = UploadService(db_session, limited_settings)
+    with pytest.raises(ValueError, match="exceeds max size"):
+        await service.store(user_id=user.id, filename="big.bin", data=b"x" * 100)
+
+
+async def test_resolve_upload_path_traversal(
+    db_session: AsyncSession, test_settings
+) -> None:
+    service = UploadService(db_session, test_settings)
+    with pytest.raises(PermissionError):
+        service.resolve_upload_path("/etc/passwd")

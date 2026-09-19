@@ -1,0 +1,25 @@
+[Unit]
+Description=Telegram Cursor Agent host worker
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/telegram-cursor-agent
+EnvironmentFile=/root/telegram-cursor-agent/.env
+Environment=DATABASE_URL=postgresql+asyncpg://tca:tca_secret@127.0.0.1:5433/telegram_cursor_agent
+Environment=REDIS_URL=redis://127.0.0.1:6380/0
+Environment=CURSOR_CLI_PATH=/root/.local/bin/agent
+Environment=PROJECTS_ROOT=/root/telegram-cursor-agent/workspace
+Environment=PROJECT_SEARCH_ROOTS=/root/telegram-cursor-agent/workspace
+Environment=ALLOWED_PROJECT_ROOTS=/root/telegram-cursor-agent/workspace
+Environment=UPLOAD_STORAGE_PATH=/root/telegram-cursor-agent/data/uploads
+ExecStart=/root/.hermes/bin/uv run telegram-cursor-worker
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

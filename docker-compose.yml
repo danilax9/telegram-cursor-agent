@@ -1,0 +1,87 @@
+x-app-environment: &app-environment
+  BOT_TOKEN: ${BOT_TOKEN:-replace-me}
+  ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID:-0}
+  DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://tca:tca_secret@postgres:5432/telegram_cursor_agent}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  CURSOR_CLI_PATH: ${CURSOR_CLI_PATH:-cursor-agent}
+  TASK_TIMEOUT: ${TASK_TIMEOUT:-600}
+  PROJECTS_ROOT: ${PROJECTS_ROOT:-/workspace}
+  PROJECT_SEARCH_ROOTS: ${PROJECT_SEARCH_ROOTS:-/workspace}
+  ALLOWED_PROJECT_ROOTS: ${ALLOWED_PROJECT_ROOTS:-/workspace}
+  UPLOAD_STORAGE_PATH: ${UPLOAD_STORAGE_PATH:-/data/uploads}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: ${LOG_JSON:-false}
+  APP_ENV: ${APP_ENV:-production}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tca
+      POSTGRES_PASSWORD: tca_secret
+      POSTGRES_DB: telegram_cursor_agent
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tca -d telegram_cursor_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  bot:
+    build: .
+    command: telegram-cursor-agent
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./workspace:/workspace
+      - upload_data:/data/uploads
+    restart: unless-stopped
+
+  worker:
+    profiles: ["container-worker"]
+    build: .
+    command: telegram-cursor-worker
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./workspace:/workspace
+      - upload_data:/data/uploads
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  upload_data:

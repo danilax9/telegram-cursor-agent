@@ -1,0 +1,69 @@
+"""Action service integration tests."""
+
+import uuid
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.execution.runner import ProcessRunner
+from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+
+
+@pytest.fixture
+def mock_queue() -> MagicMock:
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+    return queue
+
+
+async def _create_user(db: AsyncSession) -> uuid.UUID:
+    users = UserRepository(db)
+    user = await users.upsert(telegram_id=12345, username="admin", is_admin=True)
+    return user.id
+
+
+async def test_help_action(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    result = await service.handle_text(user_id, "help", str(test_settings.workspace_base))
+    assert result.result_type == ActionResultType.TEXT
+    assert "Available commands" in result.message
+
+
+async def test_agent_prompt_queues_task(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    result = await service.handle_text(
+        user_id, "implement feature X", str(test_settings.workspace_base)
+    )
+    assert result.result_type == ActionResultType.TASK_QUEUED
+    mock_queue.enqueue.assert_called_once()
+
+
+async def test_sensitive_command_requires_confirmation(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    result = await service.handle_text(
+        user_id, "run git push origin main", str(test_settings.workspace_base)
+    )
+    assert result.result_type == ActionResultType.CONFIRMATION_REQUIRED
+    assert result.confirmation_id is not None
+
+
+async def test_forbidden_command(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    result = await service.handle_text(
+        user_id, "run rm -rf /", str(test_settings.workspace_base)
+    )
+    assert result.result_type == ActionResultType.ERROR
