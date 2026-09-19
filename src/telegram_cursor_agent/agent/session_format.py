@@ -25,8 +25,6 @@ def workspace_label(workspace_path: str) -> str:
 
 
 def session_display_name(session: AgentSession) -> str:
-    if session.title:
-        return session.title
     return short_session_id(session.id)
 
 
@@ -59,13 +57,8 @@ def format_session_line(
     elif session.status == "deleted":
         status = " (удалена)"
     name = html.escape(session_display_name(session))
-    id_hint = (
-        ""
-        if session.title
-        else f' (<code>{html.escape(short_session_id(session.id))}</code>)'
-    )
     return (
-        f"{prefix}{active_marker}<b>{name}</b>{id_hint} — "
+        f"{prefix}{active_marker}<code>{name}</code> — "
         f"{html.escape(workspace_label(session.workspace_path))} — "
         f"{format_last_active(session.last_active_at)}{status}"
     )

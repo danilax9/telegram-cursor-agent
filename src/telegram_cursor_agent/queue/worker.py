@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable
 from redis.asyncio import Redis
 
 from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
-from telegram_cursor_agent.agent.session_title import DEFAULT_SESSION_TITLE
 from telegram_cursor_agent.core.config import get_settings
 from telegram_cursor_agent.core.logging import get_logger, setup_logging
 from telegram_cursor_agent.database.models.task import Task
@@ -124,16 +123,6 @@ class TaskWorker:
                             await live.finalize(result)
                         else:
                             await self._notifier.send(user.telegram_id, result)
-                    if task.task_type == "agent_prompt" and task.session_id:
-                        payload = json.loads(task.payload or "{}")
-                        prompt = payload.get("prompt", "")
-                        asyncio.create_task(
-                            self._maybe_set_session_title(
-                                task.session_id,
-                                prompt,
-                                result,
-                            )
-                        )
             except Exception as exc:
                 logger.exception("task_failed", task_id=task_id_str)
                 await tasks.mark_failed(task_id, str(exc))
@@ -206,46 +195,6 @@ class TaskWorker:
             return agent_result.output or "(no output)"
 
         raise ValueError(f"Unknown task type: {task.task_type}")
-
-    async def _maybe_set_session_title(
-        self,
-        session_id: uuid.UUID,
-        user_message: str,
-        assistant_message: str,
-    ) -> None:
-        try:
-            async with self._session_factory() as db:
-                sessions = SessionRepository(db)
-                agent_session = await sessions.get_by_id(session_id)
-                if agent_session is None or agent_session.title:
-                    return
-                workspace = self._resolve_workspace(agent_session.workspace_path)
-
-            adapter = CursorAgentAdapter(self._settings, self._runner)
-            try:
-                title = await adapter.generate_session_title(
-                    workspace,
-                    user_message,
-                    assistant_message,
-                )
-            except Exception:
-                logger.exception("session_title_cursor_failed", session_id=str(session_id))
-                title = DEFAULT_SESSION_TITLE
-
-            async with self._session_factory() as db:
-                sessions = SessionRepository(db)
-                agent_session = await sessions.get_by_id(session_id)
-                if agent_session is None or agent_session.title:
-                    return
-                await sessions.update_title(session_id, title)
-                await db.commit()
-                logger.info(
-                    "session_title_set",
-                    session_id=str(session_id),
-                    title=title,
-                )
-        except Exception:
-            logger.exception("session_title_failed", session_id=str(session_id))
 
     def _resolve_workspace(self, value: object) -> str:
         workspace = str(value or self._settings.projects_root)
