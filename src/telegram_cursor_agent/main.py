@@ -8,6 +8,7 @@ from telegram_cursor_agent.database.session import create_engine, create_session
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.queue.task_queue import TaskQueue, create_redis
 from telegram_cursor_agent.telegram.bot import create_bot, create_dispatcher
+from telegram_cursor_agent.telegram.commands_menu import setup_bot_commands
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,7 @@ async def run() -> None:
     dp = create_dispatcher(settings, session_factory, task_queue, runner)
 
     logger.info("bot_starting", env=settings.app_env)
+    await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
 
