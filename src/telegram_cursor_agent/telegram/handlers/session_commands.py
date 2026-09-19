@@ -16,7 +16,10 @@ from telegram_cursor_agent.agent.sessions import SessionError, SessionService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
 from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
+from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.services.actions import ActionResultType, ActionService
 from telegram_cursor_agent.telegram.keyboards import (
     session_delete_keyboard,
     session_resume_keyboard,
@@ -38,6 +41,74 @@ def _format_reply(text: str, settings: Settings) -> list[str]:
 async def _send_reply(message: Message, text: str, settings: Settings, **kwargs) -> None:
     for chunk in _format_reply(text, settings):
         await message.answer(chunk, **kwargs)
+
+
+async def _run_cursor_slash_command(
+    message: Message,
+    command: str,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+    task_queue: TaskQueue,
+    runner: ProcessRunner,
+) -> None:
+    user = await _get_user(db, telegram_user_id)
+    if user is None:
+        await message.answer("Сначала отправь /start.")
+        return
+
+    project_service = ProjectService(db, settings)
+    workspace = await project_service.resolve_workspace(user)
+    action_service = ActionService(db, settings, runner, task_queue)
+    result = await action_service.queue_session_slash_command(
+        user.id,
+        command,
+        workspace,
+        project_id=user.active_project_id,
+    )
+    if result.result_type == ActionResultType.TASK_QUEUED:
+        return
+    await message.answer(result.message)
+
+
+@router.message(Command("summarize", "compact", "compress"))
+async def cmd_summarize(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+    task_queue: TaskQueue,
+    runner: ProcessRunner,
+) -> None:
+    await _run_cursor_slash_command(
+        message,
+        "/summarize",
+        db,
+        settings,
+        telegram_user_id,
+        task_queue,
+        runner,
+    )
+
+
+@router.message(Command("context"))
+async def cmd_context(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+    task_queue: TaskQueue,
+    runner: ProcessRunner,
+) -> None:
+    await _run_cursor_slash_command(
+        message,
+        "/context",
+        db,
+        settings,
+        telegram_user_id,
+        task_queue,
+        runner,
+    )
 
 
 @router.message(Command("new"))

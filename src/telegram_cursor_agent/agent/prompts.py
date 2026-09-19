@@ -47,6 +47,8 @@ HELP_TEXT = """Available commands:
 • /new — start a fresh Cursor chat session
 • /resume — switch to an existing session
 • /delete — delete the current or selected session
+• /summarize — compact chat context to save tokens (/compact, /compress)
+• /context — show what fills the context window
 • /limits — Cursor plan usage (Composer/Grok vs other models)
 • /start — initialize bot
 """

@@ -58,6 +58,40 @@ async def test_sensitive_command_requires_confirmation(
     assert result.confirmation_id is not None
 
 
+async def test_summarize_requires_existing_chat(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    result = await service.queue_session_slash_command(
+        user_id,
+        "/summarize",
+        str(test_settings.projects_root),
+        project_id=None,
+    )
+    assert result.result_type == ActionResultType.ERROR
+
+
+async def test_summarize_queues_task(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    session = await service._sessions.get_or_create_active(
+        user_id, str(test_settings.projects_root)
+    )
+    await service._sessions.set_cursor_chat_id(session.id, "chat-abc")
+
+    result = await service.queue_session_slash_command(
+        user_id,
+        "/summarize",
+        str(test_settings.projects_root),
+        project_id=None,
+    )
+    assert result.result_type == ActionResultType.TASK_QUEUED
+    mock_queue.enqueue.assert_called_once()
+
+
 async def test_forbidden_command(
     db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
 ) -> None:

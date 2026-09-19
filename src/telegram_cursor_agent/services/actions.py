@@ -207,6 +207,40 @@ class ActionService:
             user_id, intent.payload, workspace, project_id
         )
 
+    async def queue_session_slash_command(
+        self,
+        user_id: uuid.UUID,
+        command: str,
+        workspace: str,
+        project_id: uuid.UUID | None,
+    ) -> ActionResult:
+        """Run a built-in Cursor slash command against the active session."""
+        agent_session = await self._sessions.get_active(user_id)
+        if agent_session is None:
+            return ActionResult(
+                ActionResultType.ERROR,
+                "Нет активной сессии. Отправь сообщение, /new или /resume.",
+            )
+        if not agent_session.cursor_chat_id:
+            return ActionResult(
+                ActionResultType.ERROR,
+                "Чат Cursor ещё пуст. Сначала отправь хотя бы одно сообщение.",
+            )
+
+        task = await self._tasks.create(
+            user_id=user_id,
+            task_type="agent_prompt",
+            payload=json.dumps({"prompt": command, "workspace": workspace}),
+            session_id=agent_session.id,
+            project_id=project_id,
+        )
+        await self._task_queue.enqueue(str(task.id))
+        return ActionResult(
+            ActionResultType.TASK_QUEUED,
+            f"Запускаю {command}…",
+            task_id=task.id,
+        )
+
     async def _handle_agent_prompt(
         self,
         user_id: uuid.UUID,
