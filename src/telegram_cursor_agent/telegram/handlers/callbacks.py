@@ -17,9 +17,41 @@ from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.actions import ActionService
 from telegram_cursor_agent.services.confirmations import ConfirmationService
+from telegram_cursor_agent.telegram.handlers.session_commands import handle_session_callback
 from telegram_cursor_agent.telegram.keyboards import model_keyboard
 
 router = Router()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("session:"))
+async def handle_session(
+    callback: CallbackQuery,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+) -> None:
+    if not callback.data or not isinstance(callback.message, Message):
+        await callback.answer("Invalid callback")
+        return
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Invalid callback")
+        return
+    _, action, session_id_str = parts
+    try:
+        session_id = UUID(session_id_str)
+    except ValueError:
+        await callback.answer("Invalid session id")
+        return
+    await callback.answer()
+    await handle_session_callback(
+        action,
+        session_id,
+        db=db,
+        settings=settings,
+        telegram_user_id=telegram_user_id,
+        message=callback.message,
+    )
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("models:"))

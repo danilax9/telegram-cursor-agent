@@ -4,6 +4,9 @@ from uuid import UUID
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from telegram_cursor_agent.agent.session_format import short_session_id, workspace_label
+from telegram_cursor_agent.database.models.session import AgentSession
+
 
 def confirmation_keyboard(confirmation_id: UUID) -> InlineKeyboardMarkup:
     cid = str(confirmation_id)
@@ -29,6 +32,39 @@ def model_keyboard(models: list[dict[str, str]], page: int = 0) -> InlineKeyboar
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="Обновить", callback_data="models:refresh")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def session_resume_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, session in enumerate(sessions, start=1):
+        marker = "● " if session.status == "active" else ""
+        label = (
+            f"{marker}{index}. {short_session_id(session.id)} — "
+            f"{workspace_label(session.workspace_path)}"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"session:resume:{session.id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def session_delete_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, session in enumerate(sessions, start=1):
+        label = (
+            f"{index}. {short_session_id(session.id)} — "
+            f"{workspace_label(session.workspace_path)}"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"session:delete:{session.id}",
+            )
+        ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

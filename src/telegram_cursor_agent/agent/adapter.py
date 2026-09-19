@@ -69,6 +69,15 @@ class CursorAgentAdapter:
         cmd.append(prompt)
         return cmd
 
+    async def create_chat(self) -> str:
+        command = [self._settings.cursor_agent_bin, "create-chat"]
+        result = await self._runner.run(command, sanitize_output=False)
+        chat_id = result.stdout.strip()
+        if result.returncode not in {0, None} or not chat_id:
+            msg = result.stderr.strip() or "Failed to create Cursor chat."
+            raise RuntimeError(msg)
+        return chat_id
+
     async def run_prompt(
         self,
         workspace: str,

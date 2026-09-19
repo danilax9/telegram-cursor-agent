@@ -25,8 +25,11 @@ HELP_TEXT = """Available commands:
 • `use project <name>` — select active project
 • `status` — show current task status
 • `cancel` — cancel running task
+• `/new` — start a fresh Cursor chat session
+• `/resume` — switch to an existing session
+• `/delete` — delete the current or selected session
 • `/limits` — Cursor plan usage (Composer/Grok vs other models)
-• `/start` — initialize session
+• `/start` — initialize bot
 """
 
 CONFIRMATION_PROMPT = (
