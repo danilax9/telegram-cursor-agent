@@ -25,6 +25,7 @@ HELP_TEXT = """Available commands:
 • `use project <name>` — select active project
 • `status` — show current task status
 • `cancel` — cancel running task
+• `/limits` — Cursor plan usage (Composer/Grok vs other models)
 • `/start` — initialize session
 """
 

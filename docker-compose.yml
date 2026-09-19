@@ -12,6 +12,7 @@ x-app-environment: &app-environment
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_JSON: ${LOG_JSON:-false}
   APP_ENV: ${APP_ENV:-production}
+  CURSOR_AUTH_FILE: ${CURSOR_AUTH_FILE:-/root/.config/cursor/auth.json}
 
 services:
   postgres:
@@ -63,6 +64,7 @@ services:
     volumes:
       - ./workspace:/workspace
       - upload_data:/data/uploads
+      - ${CURSOR_AUTH_FILE:-/root/.config/cursor/auth.json}:/root/.config/cursor/auth.json:ro
     restart: unless-stopped
 
   worker:

@@ -67,6 +67,10 @@ class Settings(BaseSettings):
         default="cursor-agent",
         validation_alias=AliasChoices("CURSOR_CLI_PATH", "CURSOR_AGENT_BIN"),
     )
+    cursor_auth_file: Path = Field(
+        default=Path.home() / ".config" / "cursor" / "auth.json",
+        validation_alias=AliasChoices("CURSOR_AUTH_FILE"),
+    )
     task_timeout: int = Field(
         default=600,
         validation_alias=AliasChoices("TASK_TIMEOUT", "CURSOR_AGENT_TIMEOUT_SECONDS"),
@@ -184,7 +188,7 @@ class Settings(BaseSettings):
     def parse_path_lists(cls, value: object) -> list[Path]:
         return parse_path_list(value)
 
-    @field_validator("projects_root", "upload_storage_path", mode="before")
+    @field_validator("projects_root", "upload_storage_path", "cursor_auth_file", mode="before")
     @classmethod
     def parse_paths(cls, value: object) -> Path:
         return _parse_single_path(value)
