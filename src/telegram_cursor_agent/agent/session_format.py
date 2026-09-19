@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -57,11 +58,15 @@ def format_session_line(
         status = " (архив)"
     elif session.status == "deleted":
         status = " (удалена)"
-    name = session_display_name(session)
-    id_hint = "" if session.title else f" (`{short_session_id(session.id)}`)"
+    name = html.escape(session_display_name(session))
+    id_hint = (
+        ""
+        if session.title
+        else f' (<code>{html.escape(short_session_id(session.id))}</code>)'
+    )
     return (
-        f"{prefix}{active_marker}**{name}**{id_hint} — "
-        f"{workspace_label(session.workspace_path)} — "
+        f"{prefix}{active_marker}<b>{name}</b>{id_hint} — "
+        f"{html.escape(workspace_label(session.workspace_path))} — "
         f"{format_last_active(session.last_active_at)}{status}"
     )
 
@@ -69,7 +74,7 @@ def format_session_line(
 def format_session_list(sessions: list[AgentSession], active_id: UUID | None) -> str:
     if not sessions:
         return "Нет сохранённых сессий. Отправь сообщение агенту или используй /new."
-    lines = ["**Сессии Cursor:**", ""]
+    lines = ["<b>Сессии Cursor:</b>", ""]
     for index, session in enumerate(sessions, start=1):
         lines.append(
             format_session_line(

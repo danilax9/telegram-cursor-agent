@@ -1,17 +1,18 @@
 """Authorization and output redaction."""
 
-import html
 import re
 from collections.abc import Sequence
 
 from telegram_cursor_agent.core.config import Settings
 
-_CODE_BLOCK_RE = re.compile(r"```(?:[^\n]*)\n(.*?)```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
-_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
-_HEADER_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[-:\s|]+\|\s*$")
+_MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+_MARKDOWN_ITALIC_RE = re.compile(
+    r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)"
+)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
 
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S+"),
@@ -56,71 +57,39 @@ def truncate_output(text: str, max_bytes: int) -> str:
     return f"{truncated}\n\n[... output truncated at {max_bytes} bytes ...]"
 
 
-def markdown_to_telegram_html(text: str) -> str:
-    """Convert common Markdown from Cursor into Telegram HTML."""
+def strip_unsupported_markdown(text: str) -> str:
+    """Fallback cleanup when the model still emits Markdown instead of Telegram HTML."""
     if not text:
         return text
-    if _looks_like_telegram_html(text):
-        return text
 
-    parts: list[str] = []
-    last = 0
-    for match in _CODE_BLOCK_RE.finditer(text):
-        before = text[last : match.start()]
-        if before:
-            parts.append(_convert_inline_markdown(before))
-        code = html.escape(match.group(1).strip("\n"), quote=False)
-        parts.append(f"<pre><code>{code}</code></pre>")
-        last = match.end()
-    remainder = text[last:]
-    if remainder:
-        parts.append(_convert_inline_markdown(remainder))
-    return "".join(parts)
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _TABLE_SEP_RE.match(stripped):
+            continue
+        table_match = _TABLE_ROW_RE.match(stripped)
+        if table_match:
+            cells = [cell.strip() for cell in table_match.group(1).split("|") if cell.strip()]
+            if cells:
+                lines.append("• " + " | ".join(cells))
+            continue
+        lines.append(line)
 
-
-def _looks_like_telegram_html(text: str) -> bool:
-    lowered = text.lower()
-    has_tag = any(tag in lowered for tag in ("<b>", "<i>", "<code>", "<pre>", "<a href="))
-    has_markdown = "**" in text or "__" in text or "```" in text
-    return has_tag and not has_markdown
-
-
-def _convert_inline_markdown(text: str) -> str:
-    parts: list[str] = []
-    last = 0
-    for match in _INLINE_CODE_RE.finditer(text):
-        parts.append(_convert_text_styles(text[last : match.start()]))
-        parts.append(f"<code>{html.escape(match.group(1), quote=False)}</code>")
-        last = match.end()
-    parts.append(_convert_text_styles(text[last:]))
-    return "".join(parts)
-
-
-def _convert_text_styles(text: str) -> str:
-    if not text:
-        return ""
-    escaped = html.escape(text, quote=False)
-    escaped = _HEADER_RE.sub(lambda match: f"<b>{match.group(1)}</b>", escaped)
-    escaped = _LINK_RE.sub(
-        lambda match: (
-            f'<a href="{html.escape(match.group(2), quote=True)}">{match.group(1)}</a>'
-        ),
-        escaped,
+    cleaned = "\n".join(lines)
+    cleaned = _MARKDOWN_HEADING_RE.sub(r"\1", cleaned)
+    cleaned = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", cleaned)
+    cleaned = _MARKDOWN_BOLD_RE.sub(lambda match: match.group(1) or match.group(2) or "", cleaned)
+    cleaned = _MARKDOWN_ITALIC_RE.sub(
+        lambda match: match.group(1) or match.group(2) or "",
+        cleaned,
     )
-    escaped = _BOLD_RE.sub(
-        lambda match: f"<b>{match.group(1) or match.group(2)}</b>",
-        escaped,
-    )
-    return _ITALIC_RE.sub(
-        lambda match: f"<i>{match.group(1) or match.group(2)}</i>",
-        escaped,
-    )
+    return cleaned
 
 
 def sanitize_for_telegram(text: str, max_bytes: int) -> str:
     redacted = redact_secrets(text)
-    formatted = markdown_to_telegram_html(redacted)
-    return truncate_output(formatted, max_bytes)
+    cleaned = strip_unsupported_markdown(redacted)
+    return truncate_output(cleaned, max_bytes)
 
 
 def split_telegram_message(text: str, max_len: int = 4000) -> list[str]:

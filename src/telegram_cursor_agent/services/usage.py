@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -139,33 +140,36 @@ def format_usage_message(snapshot: CursorUsageSnapshot) -> str:
         f"{snapshot.billing_cycle_end.strftime('%d.%m.%Y')}"
     )
     lines = [
-        f"**Лимиты Cursor — {snapshot.plan_name}**",
+        f"<b>Лимиты Cursor — {html.escape(snapshot.plan_name)}</b>",
         "",
-        f"Период: {period}",
+        f"Период: {html.escape(period)}",
     ]
     if snapshot.plan_price:
-        lines.append(f"Тариф: {snapshot.plan_price}")
+        lines.append(f"Тариф: {html.escape(snapshot.plan_price)}")
     if snapshot.included_amount_usd is not None:
         lines.append(f"Included usage: ${snapshot.included_amount_usd:.2f}")
 
     lines.extend(
         [
             "",
-            f"**{snapshot.cursor_models.label}**",
-            f"{_format_percent(snapshot.cursor_models.percent_used)}",
+            f"<b>{html.escape(snapshot.cursor_models.label)}</b>",
+            html.escape(_format_percent(snapshot.cursor_models.percent_used)),
             "",
-            f"**{snapshot.other_models.label}**",
-            f"{_format_percent(snapshot.other_models.percent_used)}",
+            f"<b>{html.escape(snapshot.other_models.label)}</b>",
+            html.escape(_format_percent(snapshot.other_models.percent_used)),
             "",
-            "**Общий included usage**",
-            f"{_format_percent(snapshot.total_percent_used)}",
+            "<b>Общий included usage</b>",
+            html.escape(_format_percent(snapshot.total_percent_used)),
         ]
     )
 
     if snapshot.display_message:
-        lines.extend(["", f"_{snapshot.display_message}_"])
+        lines.extend(["", f"<i>{html.escape(snapshot.display_message)}</i>"])
 
-    lines.extend(["", "[Spending dashboard](https://cursor.com/dashboard/spending)"])
+    lines.extend([
+        "",
+        '<a href="https://cursor.com/dashboard/spending">Spending dashboard</a>',
+    ])
     return "\n".join(lines)
 
 

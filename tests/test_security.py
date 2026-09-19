@@ -3,11 +3,11 @@
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import (
     is_admin,
-    markdown_to_telegram_html,
     redact_secrets,
     require_admin,
     sanitize_for_telegram,
     split_telegram_message,
+    strip_unsupported_markdown,
     truncate_output,
 )
 
@@ -51,24 +51,24 @@ def test_split_telegram_message() -> None:
     assert all(len(c) <= 4000 for c in chunks)
 
 
-def test_markdown_to_telegram_html_bold_and_italic() -> None:
-    result = markdown_to_telegram_html("**bold** and *italic*")
-    assert result == "<b>bold</b> and <i>italic</i>"
+def test_strip_unsupported_markdown_table() -> None:
+    text = "| Name | Value |\n| --- | --- |\n| Pro | 91% |"
+    result = strip_unsupported_markdown(text)
+    assert "| ---" not in result
+    assert "Pro" in result
+    assert "91%" in result
 
 
-def test_markdown_to_telegram_html_code_and_link() -> None:
-    result = markdown_to_telegram_html("Use `git status` and [docs](https://example.com)")
-    assert "<code>git status</code>" in result
-    assert '<a href="https://example.com">docs</a>' in result
+def test_strip_unsupported_markdown_bold() -> None:
+    result = strip_unsupported_markdown("**done**")
+    assert result == "done"
 
 
-def test_markdown_to_telegram_html_code_block() -> None:
-    result = markdown_to_telegram_html("Before\n```python\nprint('hi')\n```\nAfter")
-    assert "<pre><code>print('hi')</code></pre>" in result
-    assert "Before" in result
-    assert "After" in result
-
-
-def test_sanitize_for_telegram_converts_markdown() -> None:
-    result = sanitize_for_telegram("**done**", 1000)
+def test_sanitize_for_telegram_keeps_html() -> None:
+    result = sanitize_for_telegram("<b>done</b>", 1000)
     assert result == "<b>done</b>"
+
+
+def test_sanitize_for_telegram_strips_markdown_fallback() -> None:
+    result = sanitize_for_telegram("**done**", 1000)
+    assert result == "done"

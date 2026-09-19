@@ -121,8 +121,7 @@ class CursorAgentAdapter:
         rules_dir = Path(workspace) / ".cursor" / "rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
         rule_file = rules_dir / "telegram-bot.mdc"
-        if not rule_file.exists() or rule_file.read_text() != TELEGRAM_RULE_CONTENT:
-            rule_file.write_text(TELEGRAM_RULE_CONTENT)
+        rule_file.write_text(TELEGRAM_RULE_CONTENT)
 
     @staticmethod
     def _parse_stream_line(line: str) -> dict[str, Any] | None:

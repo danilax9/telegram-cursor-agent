@@ -63,7 +63,7 @@ async def cmd_new(
     )
 
     text = (
-        "**Новая сессия создана**\n\n"
+        "<b>Новая сессия создана</b>\n\n"
         f"{format_session_line(agent_session, mark_active=True)}\n\n"
         "Контекст предыдущей сессии сохранён в архиве. "
         "Следующее сообщение начнёт новый чат Cursor без истории."
@@ -108,7 +108,7 @@ async def cmd_resume(
         return
 
     text = (
-        "**Сессия активирована**\n\n"
+        "<b>Сессия активирована</b>\n\n"
         f"{format_session_line(activated, mark_active=True)}\n\n"
         "Следующее сообщение продолжит этот чат Cursor."
     )
@@ -140,7 +140,7 @@ async def cmd_delete(
                 await message.answer(str(exc))
                 return
             text = (
-                "**Текущая сессия удалена**\n\n"
+                "<b>Текущая сессия удалена</b>\n\n"
                 f"{format_session_line(deleted)}\n\n"
                 "Следующее сообщение создаст новую сессию автоматически."
             )
@@ -152,7 +152,7 @@ async def cmd_delete(
             await message.answer("Нет сессий для удаления.")
             return
         text = (
-            "**Активной сессии нет**\n\n"
+            "<b>Активной сессии нет</b>\n\n"
             f"{format_session_list(sessions, None)}\n\n"
             "Выбери сессию для удаления кнопкой или отправь `/delete 1`."
         )
@@ -172,9 +172,9 @@ async def cmd_delete(
         return
 
     text = (
-        "**Сессия удалена**\n\n"
+        "<b>Сессия удалена</b>\n\n"
         f"{format_session_line(deleted)}\n\n"
-        f"ID: `{short_session_id(deleted.id)}`"
+        f"ID: <code>{short_session_id(deleted.id)}</code>"
     )
     await _send_reply(message, text, settings)
 
@@ -198,16 +198,16 @@ async def handle_session_callback(
         if action == "resume":
             activated = await session_service.activate(user.id, session_id)
             text = (
-                "**Сессия активирована**\n\n"
+                "<b>Сессия активирована</b>\n\n"
                 f"{format_session_line(activated, mark_active=True)}\n\n"
                 "Следующее сообщение продолжит этот чат Cursor."
             )
         elif action == "delete":
             deleted = await session_service.delete(user.id, session_id)
             text = (
-                "**Сессия удалена**\n\n"
+                "<b>Сессия удалена</b>\n\n"
                 f"{format_session_line(deleted)}\n\n"
-                f"ID: `{short_session_id(deleted.id)}`"
+                f"ID: <code>{short_session_id(deleted.id)}</code>"
             )
         else:
             await message.answer("Unknown action")
