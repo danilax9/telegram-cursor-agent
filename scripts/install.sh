@@ -72,11 +72,24 @@ prompt() {
     fi
     die "Missing required value for: ${message}"
   fi
+  if [[ -t 0 ]]; then
+    if [[ -n "${default}" ]]; then
+      read -r -p "${message} [${default}]: " value
+    else
+      read -r -p "${message}: " value
+    fi
+  else
+    if [[ -n "${default}" ]]; then
+      echo -n "${message} [${default}]: " >/dev/tty
+    else
+      echo -n "${message}: " >/dev/tty
+    fi
+    read -r value </dev/tty
+    echo "" >/dev/tty
+  fi
   if [[ -n "${default}" ]]; then
-    read_prompt -p "${message} [${default}]: " value
     echo "${value:-${default}}"
   else
-    read_prompt -p "${message}: " value
     echo "${value}"
   fi
 }
@@ -91,8 +104,19 @@ prompt_secret() {
     fi
     die "Missing BOT_TOKEN in non-interactive mode"
   fi
-  read_prompt -s -p "${message}: " value
-  echo "" >/dev/tty 2>/dev/null || echo ""
+  # Do not use read -s: silent mode breaks paste in many SSH terminals.
+  if [[ -t 0 ]]; then
+    echo "Вставка: Ctrl+Shift+V или ПКМ. Ввод виден на экране."
+    read -r -p "${message}: " value
+  else
+    echo "Вставка: Ctrl+Shift+V или ПКМ. Ввод виден на экране." >/dev/tty
+    echo -n "${message}: " >/dev/tty
+    read -r value </dev/tty
+    echo "" >/dev/tty
+  fi
+  # Trim accidental whitespace from paste.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
   if [[ -z "${value}" ]]; then
     die "Значение не может быть пустым"
   fi
@@ -242,7 +266,13 @@ cursor_login_interactive() {
   if [[ -f "${CURSOR_AUTH_FILE}" ]]; then
     if is_interactive; then
       local reuse=""
-      read_prompt -p "Cursor уже авторизован (${CURSOR_AUTH_FILE}). Перелогиниться? [y/N]: " reuse
+      if [[ -t 0 ]]; then
+        read -r -p "Cursor уже авторизован (${CURSOR_AUTH_FILE}). Перелогиниться? [y/N]: " reuse
+      else
+        echo -n "Cursor уже авторизован (${CURSOR_AUTH_FILE}). Перелогиниться? [y/N]: " >/dev/tty
+        read -r reuse </dev/tty
+        echo "" >/dev/tty
+      fi
       if [[ ! "${reuse}" =~ ^[Yy]$ ]]; then
         log "Using existing Cursor auth"
         return 0
