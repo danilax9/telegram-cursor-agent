@@ -170,19 +170,60 @@ install_system_packages() {
 }
 
 install_docker() {
-  if need_cmd docker && docker compose version >/dev/null 2>&1; then
+  if ! need_cmd docker || ! docker compose version >/dev/null 2>&1; then
+    log "Installing Docker..."
+    if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+      log "dry-run: curl -fsSL https://get.docker.com | sh"
+      return 0
+    fi
+    curl -fsSL https://get.docker.com | sh
+  else
     log "Docker already installed"
-    return 0
   fi
-  log "Installing Docker..."
+  ensure_docker_running
+}
+
+ensure_docker_running() {
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
-    log "dry-run: curl -fsSL https://get.docker.com | sh"
     return 0
   fi
-  curl -fsSL https://get.docker.com | sh
+  if ! need_cmd docker; then
+    die "Docker CLI not found after installation"
+  fi
   if need_cmd systemctl; then
-    systemctl enable docker >/dev/null 2>&1 || true
-    systemctl start docker >/dev/null 2>&1 || true
+    run systemctl enable docker >/dev/null 2>&1 || true
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+      log "Starting Docker daemon..."
+      run systemctl start docker
+    fi
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker daemon is not running. Start it: systemctl start docker"
+  fi
+}
+
+ensure_disk_space() {
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  local avail_kb
+  avail_kb="$(df -Pk / | awk "NR==2 {print \$4}")"
+  if [[ "${avail_kb}" -lt 1048576 ]]; then
+    warn "Low disk space on / (<1 GB free). Attempting cleanup..."
+    if need_cmd journalctl; then
+      run journalctl --vacuum-size=80M >/dev/null 2>&1 || true
+    fi
+    if need_cmd apt-get; then
+      run apt-get clean >/dev/null 2>&1 || true
+      run apt-get autoremove -y >/dev/null 2>&1 || true
+    fi
+    if need_cmd docker; then
+      run docker system prune -af >/dev/null 2>&1 || true
+    fi
+    avail_kb="$(df -Pk / | awk "NR==2 {print \$4}")"
+    if [[ "${avail_kb}" -lt 524288 ]]; then
+      die "Not enough disk space on / (<512 MB free). Free space and retry."
+    fi
   fi
 }
 
@@ -460,6 +501,8 @@ run_migrations() {
 
 start_docker_stack() {
   local install_root="$1"
+  ensure_docker_running
+  ensure_disk_space
   log "Starting Docker services (postgres, redis, bot)..."
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
     return 0

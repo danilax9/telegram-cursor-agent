@@ -23,6 +23,8 @@ def test_install_script_contains_required_prompts() -> None:
     assert "/dev/tty" in content
     assert "pull --ff-only >&2" in content
     assert 'install_root="$(clone_or_update_repo' not in content
+    assert "ensure_docker_running" in content
+    assert "ensure_disk_space" in content
 
 
 def test_bootstrap_script_documents_one_liner() -> None:
