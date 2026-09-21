@@ -226,15 +226,22 @@ install_cursor_cli() {
   fi
 }
 
+assert_install_root() {
+  local install_root="$1"
+  if [[ ! -f "${install_root}/pyproject.toml" ]]; then
+    die "Invalid install directory (pyproject.toml missing): ${install_root}"
+  fi
+}
+
 clone_or_update_repo() {
   local target="$1"
   if [[ -f "${target}/pyproject.toml" ]]; then
     log "Using existing repo at ${target}"
     if [[ -d "${target}/.git" ]] && [[ "${TCA_DRY_RUN}" != "1" ]]; then
       log "Updating repository..."
-      git -C "${target}" pull --ff-only || warn "git pull failed; continuing with local copy"
+      git -C "${target}" pull --ff-only >&2 || warn "git pull failed; continuing with local copy"
     fi
-    echo "${target}"
+    assert_install_root "${target}"
     return 0
   fi
 
@@ -246,11 +253,10 @@ clone_or_update_repo() {
   run mkdir -p "$(dirname "${target}")"
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
     log "dry-run: git clone --branch ${TCA_REPO_BRANCH} ${TCA_REPO_URL} ${target}"
-    echo "${target}"
     return 0
   fi
-  git clone --branch "${TCA_REPO_BRANCH}" --depth 1 "${TCA_REPO_URL}" "${target}"
-  echo "${target}"
+  git clone --branch "${TCA_REPO_BRANCH}" --depth 1 "${TCA_REPO_URL}" "${target}" >&2
+  assert_install_root "${target}"
 }
 
 extract_login_url() {
@@ -550,7 +556,8 @@ main() {
   install_uv
   install_cursor_cli
 
-  install_root="$(clone_or_update_repo "${install_root}")"
+  clone_or_update_repo "${install_root}"
+  assert_install_root "${install_root}"
   REPO_ROOT="${install_root}"
 
   prepare_directories "${install_root}"

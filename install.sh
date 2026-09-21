@@ -34,13 +34,13 @@ log "Install dir: ${TCA_INSTALL_DIR}"
 
 if [[ -d "${TCA_INSTALL_DIR}/.git" ]]; then
   log "Directory exists, updating..."
-  git -C "${TCA_INSTALL_DIR}" fetch origin "${TCA_REPO_BRANCH}"
-  git -C "${TCA_INSTALL_DIR}" checkout "${TCA_REPO_BRANCH}" 2>/dev/null || true
-  git -C "${TCA_INSTALL_DIR}" pull --ff-only
+  git -C "${TCA_INSTALL_DIR}" fetch origin "${TCA_REPO_BRANCH}" >&2
+  git -C "${TCA_INSTALL_DIR}" checkout "${TCA_REPO_BRANCH}" >&2 2>/dev/null || true
+  git -C "${TCA_INSTALL_DIR}" pull --ff-only >&2
 else
   log "Cloning ${TCA_REPO_URL}..."
   mkdir -p "$(dirname "${TCA_INSTALL_DIR}")"
-  git clone --branch "${TCA_REPO_BRANCH}" --depth 1 "${TCA_REPO_URL}" "${TCA_INSTALL_DIR}"
+  git clone --branch "${TCA_REPO_BRANCH}" --depth 1 "${TCA_REPO_URL}" "${TCA_INSTALL_DIR}" >&2
 fi
 
 export TCA_INSTALL_DIR TCA_REPO_URL TCA_REPO_BRANCH
