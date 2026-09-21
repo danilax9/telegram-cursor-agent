@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegram_cursor_agent.database.models.confirmation import Confirmation
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 class ConfirmationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -53,11 +59,28 @@ class ConfirmationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_pending_by_type(
+        self, user_id: uuid.UUID, action_type: str
+    ) -> Confirmation | None:
+        now = datetime.now(UTC)
+        result = await self._session.execute(
+            select(Confirmation)
+            .where(
+                Confirmation.user_id == user_id,
+                Confirmation.action_type == action_type,
+                Confirmation.status == "pending",
+                Confirmation.expires_at > now,
+            )
+            .order_by(Confirmation.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def approve(self, confirmation_id: uuid.UUID) -> Confirmation | None:
         confirmation = await self.get_by_id(confirmation_id)
         if confirmation is None or confirmation.status != "pending":
             return None
-        if confirmation.expires_at < datetime.now(UTC):
+        if _as_utc(confirmation.expires_at) < datetime.now(UTC):
             confirmation.status = "expired"
             await self._session.flush()
             return None

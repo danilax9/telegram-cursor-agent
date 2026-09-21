@@ -61,6 +61,9 @@ class ProjectService:
                 return project.root_path
         return str(self._settings.projects_root)
 
+    def resolve_agent_workspace(self) -> str:
+        return str(self._settings.resolved_agent_workspace)
+
     async def list_for_user(self, owner_id: uuid.UUID) -> list[Project]:
         return await self._repo.list_by_owner(owner_id)
 

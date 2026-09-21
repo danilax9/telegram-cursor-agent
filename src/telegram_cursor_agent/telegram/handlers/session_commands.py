@@ -91,6 +91,29 @@ async def cmd_summarize(
     )
 
 
+@router.message(Command("deploy"))
+async def cmd_deploy(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+    task_queue: TaskQueue,
+    runner: ProcessRunner,
+) -> None:
+    user = await _get_user(db, telegram_user_id)
+    if user is None:
+        await message.answer("Сначала отправь /start.")
+        return
+
+    action_service = ActionService(db, settings, runner, task_queue)
+    result = await action_service.queue_deploy(user.id)
+    if result.result_type == ActionResultType.TASK_QUEUED:
+        if result.message:
+            await message.answer(result.message)
+        return
+    await message.answer(result.message)
+
+
 @router.message(Command("context"))
 async def cmd_context(
     message: Message,
@@ -134,7 +157,7 @@ async def cmd_new(
     )
 
     text = (
-        "<b>Новая сессия создана</b>\n\n"
+        "*Новая сессия создана*\n\n"
         f"{format_session_line(agent_session, mark_active=True)}\n\n"
         "Контекст предыдущей сессии сохранён в архиве. "
         "Следующее сообщение начнёт новый чат Cursor без истории."
@@ -179,7 +202,7 @@ async def cmd_resume(
         return
 
     text = (
-        "<b>Сессия активирована</b>\n\n"
+        "*Сессия активирована*\n\n"
         f"{format_session_line(activated, mark_active=True)}\n\n"
         "Следующее сообщение продолжит этот чат Cursor."
     )
@@ -211,7 +234,7 @@ async def cmd_delete(
                 await message.answer(str(exc))
                 return
             text = (
-                "<b>Текущая сессия удалена</b>\n\n"
+                "*Текущая сессия удалена*\n\n"
                 f"{format_session_line(deleted)}\n\n"
                 "Следующее сообщение создаст новую сессию автоматически."
             )
@@ -223,7 +246,7 @@ async def cmd_delete(
             await message.answer("Нет сессий для удаления.")
             return
         text = (
-            "<b>Активной сессии нет</b>\n\n"
+            "*Активной сессии нет*\n\n"
             f"{format_session_list(sessions, None)}\n\n"
             "Выбери сессию для удаления кнопкой или отправь `/delete 1`."
         )
@@ -243,9 +266,9 @@ async def cmd_delete(
         return
 
     text = (
-        "<b>Сессия удалена</b>\n\n"
+        "*Сессия удалена*\n\n"
         f"{format_session_line(deleted)}\n\n"
-        f"ID: <code>{short_session_id(deleted.id)}</code>"
+        f"ID: `{short_session_id(deleted.id)}`"
     )
     await _send_reply(message, text, settings)
 
@@ -269,16 +292,16 @@ async def handle_session_callback(
         if action == "resume":
             activated = await session_service.activate(user.id, session_id)
             text = (
-                "<b>Сессия активирована</b>\n\n"
+                "*Сессия активирована*\n\n"
                 f"{format_session_line(activated, mark_active=True)}\n\n"
                 "Следующее сообщение продолжит этот чат Cursor."
             )
         elif action == "delete":
             deleted = await session_service.delete(user.id, session_id)
             text = (
-                "<b>Сессия удалена</b>\n\n"
+                "*Сессия удалена*\n\n"
                 f"{format_session_line(deleted)}\n\n"
-                f"ID: <code>{short_session_id(deleted.id)}</code>"
+                f"ID: `{short_session_id(deleted.id)}`"
             )
         else:
             await message.answer("Unknown action")

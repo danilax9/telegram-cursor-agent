@@ -4,6 +4,7 @@ import re
 from collections.abc import Sequence
 
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.database.models.user import User
 
 _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|[-:\s|]+\|\s*$")
@@ -13,6 +14,8 @@ _MARKDOWN_ITALIC_RE = re.compile(
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_MARKDOWN_CODE_FENCE_RE = re.compile(r"```(?:[\w-]*\n)?(.*?)```", re.DOTALL)
+_MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S+"),
@@ -23,13 +26,30 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def is_admin(telegram_user_id: int, settings: Settings) -> bool:
+def is_super_admin(telegram_user_id: int, settings: Settings) -> bool:
     return telegram_user_id in settings.telegram_admin_ids
 
 
-def require_admin(telegram_user_id: int, settings: Settings) -> None:
-    if not is_admin(telegram_user_id, settings):
+def is_admin(telegram_user_id: int, settings: Settings, user: User | None = None) -> bool:
+    if is_super_admin(telegram_user_id, settings):
+        return True
+    return user is not None and user.is_admin
+
+
+def is_authorized(telegram_user_id: int, settings: Settings, user: User | None = None) -> bool:
+    return is_admin(telegram_user_id, settings, user)
+
+
+def require_admin(
+    telegram_user_id: int, settings: Settings, user: User | None = None
+) -> None:
+    if not is_authorized(telegram_user_id, settings, user):
         raise PermissionError(f"User {telegram_user_id} is not authorized")
+
+
+def require_super_admin(telegram_user_id: int, settings: Settings) -> None:
+    if not is_super_admin(telegram_user_id, settings):
+        raise PermissionError("Only the bot owner can manage access.")
 
 
 def redact_secrets(text: str) -> str:
@@ -57,8 +77,13 @@ def truncate_output(text: str, max_bytes: int) -> str:
     return f"{truncated}\n\n[... output truncated at {max_bytes} bytes ...]"
 
 
+def _flatten_code_fence(body: str) -> str:
+    lines = body.strip().splitlines() or [""]
+    return "\n".join(f"`{line.replace('`', "'")}`" if line else "" for line in lines)
+
+
 def strip_unsupported_markdown(text: str) -> str:
-    """Fallback cleanup when the model still emits Markdown instead of Telegram HTML."""
+    """Normalize Markdown for Telegram legacy mode (no ``` fences)."""
     if not text:
         return text
 
@@ -76,6 +101,10 @@ def strip_unsupported_markdown(text: str) -> str:
         lines.append(line)
 
     cleaned = "\n".join(lines)
+    cleaned = _MARKDOWN_CODE_FENCE_RE.sub(
+        lambda match: _flatten_code_fence(match.group(1)),
+        cleaned,
+    )
     cleaned = _MARKDOWN_HEADING_RE.sub(r"\1", cleaned)
     cleaned = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", cleaned)
     cleaned = _MARKDOWN_BOLD_RE.sub(lambda match: match.group(1) or match.group(2) or "", cleaned)

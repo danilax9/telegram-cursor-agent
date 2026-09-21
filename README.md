@@ -13,6 +13,50 @@ Production-quality Telegram bot that remotely drives the Cursor CLI coding agent
 
 ## Quick Start
 
+### One-command install (any server)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
+```
+
+Interactive installer asks for:
+
+1. Telegram bot token (from @BotFather)
+2. Your Telegram user ID (from @userinfobot)
+3. Cursor login (opens a browser link)
+
+The script installs Docker, uv, Cursor CLI, starts the bot stack, and registers the systemd worker.
+
+From a cloned repo:
+
+```bash
+git clone https://github.com/danilax9/telegram-cursor-agent.git ~/telegram-cursor-agent
+bash ~/telegram-cursor-agent/install.sh
+```
+
+Non-interactive (CI / automation):
+
+```bash
+BOT_TOKEN='123:abc' ADMIN_TELEGRAM_ID='123456789' TCA_SKIP_CURSOR_LOGIN=1 \
+  TCA_NONINTERACTIVE=1 bash ~/telegram-cursor-agent/scripts/install.sh
+```
+
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/uninstall.sh | bash
+```
+
+Or from the install directory:
+
+```bash
+bash ~/telegram-cursor-agent/scripts/uninstall.sh
+```
+
+By default uninstall stops services and removes the install directory, but keeps Docker volumes and Cursor auth unless you confirm otherwise.
+
+### Manual setup
+
 ```bash
 cp .env.example .env
 # Edit .env: set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_IDS

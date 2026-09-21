@@ -3,6 +3,8 @@
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import (
     is_admin,
+    is_authorized,
+    is_super_admin,
     redact_secrets,
     require_admin,
     sanitize_for_telegram,
@@ -10,11 +12,16 @@ from telegram_cursor_agent.core.security import (
     strip_unsupported_markdown,
     truncate_output,
 )
+from telegram_cursor_agent.database.models.user import User
 
 
 def test_is_admin(test_settings: Settings) -> None:
     assert is_admin(12345, test_settings)
     assert not is_admin(99999, test_settings)
+    granted = User(telegram_id=99999, username="guest", is_admin=True)
+    assert is_authorized(99999, test_settings, granted)
+    assert is_super_admin(12345, test_settings)
+    assert not is_super_admin(99999, test_settings)
 
 
 def test_require_admin_raises(test_settings: Settings) -> None:
@@ -64,11 +71,24 @@ def test_strip_unsupported_markdown_bold() -> None:
     assert result == "done"
 
 
-def test_sanitize_for_telegram_keeps_html() -> None:
-    result = sanitize_for_telegram("<b>done</b>", 1000)
-    assert result == "<b>done</b>"
+def test_sanitize_for_telegram_keeps_inline_code() -> None:
+    result = sanitize_for_telegram("Use `help`", 1000)
+    assert result == "Use `help`"
 
 
 def test_sanitize_for_telegram_strips_markdown_fallback() -> None:
     result = sanitize_for_telegram("**done**", 1000)
     assert result == "done"
+
+
+def test_strip_unsupported_markdown_flattens_code_fences() -> None:
+    result = strip_unsupported_markdown("```\nline1\nline2\n```")
+    assert "```" not in result
+    assert "`line1`" in result
+    assert "`line2`" in result
+
+
+def test_strip_unsupported_markdown_keeps_inline_code() -> None:
+    result = strip_unsupported_markdown("Use `help` or `/mcp`")
+    assert "`help`" in result
+    assert "`/mcp`" in result

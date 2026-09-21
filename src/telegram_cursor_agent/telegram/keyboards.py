@@ -11,6 +11,14 @@ from telegram_cursor_agent.agent.session_format import (
 from telegram_cursor_agent.database.models.session import AgentSession
 
 
+def mcp_setup_keyboard(confirmation_id: UUID) -> InlineKeyboardMarkup:
+    cid = str(confirmation_id)
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Установить", callback_data=f"mcp:install:{cid}"),
+        InlineKeyboardButton(text="Отмена", callback_data=f"mcp:cancel:{cid}"),
+    ]])
+
+
 def confirmation_keyboard(confirmation_id: UUID) -> InlineKeyboardMarkup:
     cid = str(confirmation_id)
     return InlineKeyboardMarkup(inline_keyboard=[[

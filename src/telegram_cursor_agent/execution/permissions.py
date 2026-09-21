@@ -55,6 +55,11 @@ def classify_command(command: str, settings: Settings) -> CommandClassification:
     if not normalized:
         return CommandClassification(CommandRisk.FORBIDDEN, command, "Empty command")
 
+    if settings.self_deploy_enabled:
+        deploy_script = str(settings.deploy_script)
+        if deploy_script in normalized or normalized.endswith("deploy-self.sh"):
+            return CommandClassification(CommandRisk.SAFE, command)
+
     lower = normalized.lower()
     for forbidden in _FORBIDDEN_SUBSTRINGS:
         if forbidden.lower() in lower:
@@ -64,7 +69,7 @@ def classify_command(command: str, settings: Settings) -> CommandClassification:
 
     first_token = normalized.split()[0]
     base_cmd = first_token.split("/")[-1]
-    if base_cmd not in settings.allowed_command_prefixes:
+    if base_cmd not in settings.effective_allowed_command_prefixes:
         return CommandClassification(
             CommandRisk.FORBIDDEN,
             command,

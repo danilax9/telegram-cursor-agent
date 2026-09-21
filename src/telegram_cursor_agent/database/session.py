@@ -13,7 +13,14 @@ from telegram_cursor_agent.core.config import Settings
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
-    return create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
+    # The worker can idle for hours between tasks; recycle connections before
+    # Postgres or the network drops them underneath us.
+    return create_async_engine(
+        settings.database_url,
+        echo=False,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+    )
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

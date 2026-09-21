@@ -4,15 +4,26 @@ x-app-environment: &app-environment
   DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://tca:tca_secret@postgres:5432/telegram_cursor_agent}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   CURSOR_CLI_PATH: ${CURSOR_CLI_PATH:-cursor-agent}
-  TASK_TIMEOUT: ${TASK_TIMEOUT:-600}
+  TASK_TIMEOUT: ${TASK_TIMEOUT:-3600}
   PROJECTS_ROOT: ${PROJECTS_ROOT:-/workspace}
   PROJECT_SEARCH_ROOTS: ${PROJECT_SEARCH_ROOTS:-/workspace}
   ALLOWED_PROJECT_ROOTS: ${ALLOWED_PROJECT_ROOTS:-/workspace}
-  UPLOAD_STORAGE_PATH: ${UPLOAD_STORAGE_PATH:-/data/uploads}
+  UPLOAD_STORAGE_PATH: /data/uploads
+  UPLOAD_HOST_PATH: /root/telegram-cursor-agent/data/uploads
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_JSON: ${LOG_JSON:-false}
   APP_ENV: ${APP_ENV:-production}
   CURSOR_AUTH_FILE: ${CURSOR_AUTH_FILE:-/root/.config/cursor/auth.json}
+  CURSOR_MCP_CONFIG_PATH: ${CURSOR_MCP_CONFIG_PATH:-/root/.cursor/mcp.json}
+  CURSOR_APPROVE_MCPS: ${CURSOR_APPROVE_MCPS:-true}
+  MCP_SETUP_TTL_SECONDS: ${MCP_SETUP_TTL_SECONDS:-3600}
+  SANDBOX_OPEN: ${SANDBOX_OPEN:-false}
+  SELF_DEPLOY_ENABLED: ${SELF_DEPLOY_ENABLED:-false}
+  SELF_REPO_ROOT: ${SELF_REPO_ROOT:-/root/telegram-cursor-agent}
+  AGENT_WORKSPACE: ${AGENT_WORKSPACE:-}
+  DEPLOY_SCRIPT: ${DEPLOY_SCRIPT:-/root/telegram-cursor-agent/scripts/deploy-self.sh}
+  WORKER_SERVICE_NAME: ${WORKER_SERVICE_NAME:-telegram-cursor-agent-worker}
+  BOT_COMPOSE_SERVICE: ${BOT_COMPOSE_SERVICE:-bot}
 
 services:
   postgres:
@@ -44,7 +55,10 @@ services:
   migrate:
     build: .
     command: alembic upgrade head
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      DATABASE_URL: postgresql+asyncpg://tca:tca_secret@postgres:5432/telegram_cursor_agent
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,7 +67,14 @@ services:
   bot:
     build: .
     command: telegram-cursor-agent
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      PROJECTS_ROOT: /workspace
+      PROJECT_SEARCH_ROOTS: /workspace
+      ALLOWED_PROJECT_ROOTS: /workspace
+      SELF_REPO_ROOT: /host-self-repo
+      DATABASE_URL: postgresql+asyncpg://tca:tca_secret@postgres:5432/telegram_cursor_agent
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,15 +84,23 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./workspace:/workspace
-      - upload_data:/data/uploads
+      - ./src:/app/src
+      - ${SELF_REPO_ROOT:-/root/telegram-cursor-agent}:/host-self-repo
+      - ./data/uploads:/data/uploads
       - ${CURSOR_AUTH_FILE:-/root/.config/cursor/auth.json}:/root/.config/cursor/auth.json:ro
+      - /root/.cursor:/root/.cursor
+      - /root/.local:/root/.local:ro
+      - /root/.cursor-accounts:/root/.cursor-accounts
     restart: unless-stopped
 
   worker:
     profiles: ["container-worker"]
     build: .
     command: telegram-cursor-worker
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      DATABASE_URL: postgresql+asyncpg://tca:tca_secret@postgres:5432/telegram_cursor_agent
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,9 +110,8 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./workspace:/workspace
-      - upload_data:/data/uploads
+      - ./data/uploads:/data/uploads
     restart: unless-stopped
 
 volumes:
   postgres_data:
-  upload_data:

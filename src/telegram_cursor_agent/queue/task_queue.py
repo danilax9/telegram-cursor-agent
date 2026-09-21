@@ -53,4 +53,12 @@ class TaskQueue:
 
 
 async def create_redis(settings: Settings) -> Redis:  # type: ignore[type-arg]
-    return aioredis.from_url(settings.redis_url, decode_responses=False)
+    # Health checks plus keepalive let a long-idle worker notice a dropped
+    # connection and reconnect instead of failing the next dequeue.
+    return aioredis.from_url(
+        settings.redis_url,
+        decode_responses=False,
+        health_check_interval=30,
+        socket_keepalive=True,
+        retry_on_timeout=True,
+    )

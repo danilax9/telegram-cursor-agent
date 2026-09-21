@@ -7,10 +7,34 @@ from telegram_cursor_agent.core.logging import get_logger, setup_logging
 from telegram_cursor_agent.database.session import create_engine, create_session_factory
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.queue.task_queue import TaskQueue, create_redis
+from telegram_cursor_agent.services.deploy_recovery import DeployRecoveryService
 from telegram_cursor_agent.telegram.bot import create_bot, create_dispatcher
 from telegram_cursor_agent.telegram.commands_menu import setup_bot_commands
+from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 logger = get_logger(__name__)
+
+
+async def _deliver_deploy_notifications(
+    settings,
+    session_factory,
+    redis_client,
+) -> None:
+    notifier = TelegramNotifier(settings)
+    try:
+        recovery = DeployRecoveryService(
+            settings,
+            session_factory,
+            notifier=notifier,
+            redis=redis_client,
+        )
+        await recovery.deliver_notifications_when_ready()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("deploy_notification_delivery_failed")
+    finally:
+        await notifier.close()
 
 
 async def run() -> None:
@@ -24,11 +48,22 @@ async def run() -> None:
     runner = ProcessRunner(settings)
 
     bot = create_bot(settings)
-    dp = create_dispatcher(settings, session_factory, task_queue, runner)
+    dp = create_dispatcher(settings, session_factory, task_queue, runner, redis_client)
 
     logger.info("bot_starting", env=settings.app_env)
-    await setup_bot_commands(bot)
-    await dp.start_polling(bot)
+    try:
+        await setup_bot_commands(bot)
+    except Exception:
+        # A transient Telegram error here must not crash-loop the container.
+        logger.exception("setup_bot_commands_failed")
+    notify_task = asyncio.create_task(
+        _deliver_deploy_notifications(settings, session_factory, redis_client)
+    )
+    try:
+        await dp.start_polling(bot)
+    finally:
+        notify_task.cancel()
+        await asyncio.gather(notify_task, return_exceptions=True)
 
 
 def main() -> None:

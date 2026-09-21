@@ -23,12 +23,18 @@ from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.git.service import GitService
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.services.image_attachments import (
+    StoredImage,
+    build_prompt_with_images,
+)
+from telegram_cursor_agent.services.mcp_setup import McpSetupService
 
 
 class ActionResultType(StrEnum):
     TEXT = "text"
     CONFIRMATION_REQUIRED = "confirmation_required"
     TASK_QUEUED = "task_queued"
+    MCP_SETUP = "mcp_setup"
     ERROR = "error"
 
 
@@ -69,9 +75,18 @@ class ActionService:
         text: str,
         workspace: str,
         project_id: uuid.UUID | None = None,
+        agent_workspace: str | None = None,
+        image_attachments: list[StoredImage] | None = None,
     ) -> ActionResult:
         intent = parse_intent(text)
-        return await self._dispatch(user_id, intent, workspace, project_id)
+        return await self._dispatch(
+            user_id,
+            intent,
+            workspace,
+            project_id,
+            agent_workspace or workspace,
+            image_attachments=image_attachments,
+        )
 
     async def _dispatch(
         self,
@@ -79,6 +94,8 @@ class ActionService:
         intent: ParsedIntent,
         workspace: str,
         project_id: uuid.UUID | None,
+        agent_workspace: str,
+        image_attachments: list[StoredImage] | None = None,
     ) -> ActionResult:
         handlers: dict[IntentType, ActionHandler] = {
             IntentType.HELP: self._handle_help,
@@ -91,6 +108,9 @@ class ActionService:
             IntentType.GIT_LOG: self._handle_git_log,
             IntentType.RUN_COMMAND: self._handle_run_command,
             IntentType.AGENT_PROMPT: self._handle_agent_prompt,
+            IntentType.DEPLOY: self._handle_deploy,
+            IntentType.MCP_LIST: self._handle_mcp_list,
+            IntentType.MCP_ADD: self._handle_mcp_add,
         }
 
         handler = handlers.get(intent.intent)
@@ -101,6 +121,14 @@ class ActionService:
             )
 
         try:
+            if intent.intent == IntentType.AGENT_PROMPT:
+                return await handler(
+                    user_id,
+                    intent,
+                    agent_workspace,
+                    project_id,
+                    image_attachments=image_attachments,
+                )
             return await handler(user_id, intent, workspace, project_id)
         except PermissionError as exc:
             return ActionResult(ActionResultType.ERROR, str(exc))
@@ -241,20 +269,98 @@ class ActionService:
             task_id=task.id,
         )
 
+    async def queue_deploy(
+        self,
+        user_id: uuid.UUID,
+        *,
+        workspace: str | None = None,
+        project_id: uuid.UUID | None = None,
+    ) -> ActionResult:
+        if not self._settings.self_deploy_enabled:
+            return ActionResult(
+                ActionResultType.ERROR,
+                "Self-deploy отключён. Установи SELF_DEPLOY_ENABLED=true.",
+            )
+
+        agent_session = await self._sessions.get_active(user_id)
+        session_id = agent_session.id if agent_session else None
+        deploy_workspace = workspace
+        if deploy_workspace is None and agent_session is not None:
+            deploy_workspace = agent_session.workspace_path
+        if deploy_workspace is None and self._settings.agent_workspace is not None:
+            deploy_workspace = str(self._settings.agent_workspace)
+
+        task = await self._tasks.create(
+            user_id=user_id,
+            task_type="deploy",
+            payload=json.dumps({"workspace": deploy_workspace} if deploy_workspace else {}),
+            session_id=session_id,
+            project_id=project_id,
+        )
+        await self._task_queue.enqueue(str(task.id))
+        # The deploy script sends the single pre-restart warning; stay silent here.
+        return ActionResult(ActionResultType.TASK_QUEUED, "", task_id=task.id)
+
+    async def _handle_deploy(
+        self, user_id: uuid.UUID, *_args: object
+    ) -> ActionResult:
+        return await self.queue_deploy(user_id)
+
+    async def _handle_mcp_list(self, user_id: uuid.UUID, *_args: object) -> ActionResult:
+        service = McpSetupService(
+            self._db, self._settings, self._runner, self._task_queue
+        )
+        return ActionResult(ActionResultType.TEXT, await service.list_servers())
+
+    async def _handle_mcp_add(
+        self, user_id: uuid.UUID, intent: ParsedIntent, *_args: object
+    ) -> ActionResult:
+        if not intent.payload.strip():
+            return ActionResult(
+                ActionResultType.ERROR,
+                "Укажи MCP: `добавь mcp github`",
+            )
+        service = McpSetupService(
+            self._db, self._settings, self._runner, self._task_queue
+        )
+        try:
+            message, confirmation_id = await service.start_add(user_id, intent.payload)
+        except ValueError as exc:
+            return ActionResult(ActionResultType.ERROR, str(exc))
+        if confirmation_id is None:
+            return ActionResult(ActionResultType.ERROR, message)
+        return ActionResult(
+            ActionResultType.MCP_SETUP,
+            message,
+            confirmation_id=confirmation_id,
+        )
+
     async def _handle_agent_prompt(
         self,
         user_id: uuid.UUID,
         intent: ParsedIntent,
         workspace: str,
         project_id: uuid.UUID | None,
+        image_attachments: list[StoredImage] | None = None,
     ) -> ActionResult:
+        prompt = intent.payload
+        if image_attachments:
+            prompt = build_prompt_with_images(
+                prompt, image_attachments, settings=self._settings
+            )
         agent_session = await self._sessions.get_or_create_active(
             user_id, workspace, project_id
         )
         task = await self._tasks.create(
             user_id=user_id,
             task_type="agent_prompt",
-            payload=json.dumps({"prompt": intent.payload, "workspace": workspace}),
+            payload=json.dumps(
+                {
+                    "prompt": prompt,
+                    "workspace": workspace,
+                    "agent_workspace": workspace,
+                }
+            ),
             session_id=agent_session.id,
             project_id=project_id,
         )

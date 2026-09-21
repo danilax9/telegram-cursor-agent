@@ -15,6 +15,9 @@ class IntentType(StrEnum):
     CANCEL = "cancel"
     HELP = "help"
     STATUS = "status"
+    DEPLOY = "deploy"
+    MCP_LIST = "mcp_list"
+    MCP_ADD = "mcp_add"
     UNKNOWN = "unknown"
 
 
@@ -29,6 +32,7 @@ class ParsedIntent:
 _HELP_PHRASES = frozenset({"help", "?", "commands", "what can you do"})
 _CANCEL_PHRASES = frozenset({"cancel", "stop", "abort", "kill"})
 _STATUS_PHRASES = frozenset({"status", "state", "progress"})
+_DEPLOY_PHRASES = frozenset({"deploy", "self deploy", "self-deploy", "restart bot", "перезапуск"})
 _LIST_PROJECTS_PHRASES = frozenset(
     {"list projects", "show projects", "projects", "list repos", "repos"}
 )
@@ -38,6 +42,16 @@ _GIT_DIFF_PHRASES = frozenset({"git diff", "show diff", "diff"})
 _GIT_LOG_PHRASES = frozenset({"git log", "show log", "commit history", "log"})
 
 _SELECT_PREFIXES = ("use project ", "select project ", "switch to ", "project ")
+_MCP_LIST_PHRASES = frozenset({"mcp", "mcp list", "list mcp", "mcps", "список mcp"})
+_MCP_ADD_PREFIXES = (
+    "mcp add ",
+    "add mcp ",
+    "install mcp ",
+    "setup mcp ",
+    "добавь mcp ",
+    "подключи mcp ",
+    "установи mcp ",
+)
 
 
 def _normalize(text: str) -> str:
@@ -67,6 +81,16 @@ def parse_intent(text: str) -> ParsedIntent:
 
     if normalized in _STATUS_PHRASES:
         return ParsedIntent(IntentType.STATUS, 1.0)
+
+    if normalized in _DEPLOY_PHRASES:
+        return ParsedIntent(IntentType.DEPLOY, 1.0)
+
+    if normalized in _MCP_LIST_PHRASES:
+        return ParsedIntent(IntentType.MCP_LIST, 1.0)
+
+    mcp_query = _starts_with_any(normalized, _MCP_ADD_PREFIXES)
+    if mcp_query:
+        return ParsedIntent(IntentType.MCP_ADD, 0.95, payload=mcp_query)
 
     if normalized in _LIST_PROJECTS_PHRASES:
         return ParsedIntent(IntentType.LIST_PROJECTS, 1.0)

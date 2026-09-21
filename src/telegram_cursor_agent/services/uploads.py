@@ -53,3 +53,22 @@ class UploadService:
         if not str(path).startswith(str(storage_root)):
             raise PermissionError("Upload path outside storage root")
         return path
+
+
+def agent_visible_upload_path(stored_path: str, settings: Settings) -> str:
+    """Map a stored upload path to where the host worker can read the file."""
+    stored = Path(stored_path)
+    storage_root = settings.upload_storage_path
+    agent_root = settings.agent_upload_storage_path
+    known_roots = {
+        storage_root,
+        Path("/data/uploads"),
+        Path("/root/telegram-cursor-agent/data/uploads"),
+    }
+    for root in known_roots:
+        try:
+            relative = stored.relative_to(root)
+        except ValueError:
+            continue
+        return str(agent_root / relative)
+    return stored_path

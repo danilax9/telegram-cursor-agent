@@ -85,6 +85,13 @@ class TaskRepository:
         )
         return list(result.scalars().all())
 
+    async def list_running(self, limit: int | None = 20) -> list[Task]:
+        query = select(Task).where(Task.status == "running").order_by(Task.started_at)
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self._session.execute(query)
+        return list(result.scalars().all())
+
     async def list_running_for_user(self, user_id: uuid.UUID) -> list[Task]:
         result = await self._session.execute(
             select(Task)

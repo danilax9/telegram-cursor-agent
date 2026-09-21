@@ -6,8 +6,11 @@ from typing import Any
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from telegram_cursor_agent.core.config import Settings
-from telegram_cursor_agent.core.security import is_admin
+from telegram_cursor_agent.core.security import is_authorized
+from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.telegram.messages import UNAUTHORIZED_MESSAGE
 
 
@@ -28,7 +31,12 @@ class AdminAuthMiddleware(BaseMiddleware):
         if user_id is None:
             return None
 
-        if not is_admin(user_id, self._settings):
+        db: AsyncSession | None = data.get("db")
+        user = None
+        if db is not None:
+            user = await UserRepository(db).get_by_telegram_id(user_id)
+
+        if not is_authorized(user_id, self._settings, user):
             if isinstance(event, Message):
                 await event.answer(UNAUTHORIZED_MESSAGE)
             elif isinstance(event, CallbackQuery):

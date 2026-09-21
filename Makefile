@@ -1,6 +1,12 @@
-.PHONY: install test lint typecheck migrate up verify
+.PHONY: install uninstall deps test lint typecheck migrate up verify
 
 install:
+	bash scripts/install.sh
+
+uninstall:
+	bash scripts/uninstall.sh
+
+deps:
 	uv sync --all-extras
 
 test:

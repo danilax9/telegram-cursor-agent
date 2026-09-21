@@ -1,6 +1,7 @@
 """Async subprocess runner with process-group cancellation."""
 
 import asyncio
+import contextlib
 import os
 import signal
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -26,6 +27,7 @@ class RunResult:
     stderr: str
     cancelled: bool = False
     truncated: bool = False
+    timed_out: bool = False
 
 
 class ProcessRunner:
@@ -41,55 +43,64 @@ class ProcessRunner:
         sanitize_output: bool = True,
         on_stdout_line: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
+        env: dict[str, str] | None = None,
     ) -> RunResult:
         timeout_seconds = timeout_seconds or float(self._settings.cursor_agent_timeout_seconds)
+        process_env = None
+        if env:
+            process_env = os.environ.copy()
+            process_env.update(env)
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
+            env=process_env,
         )
         handle = ProcessHandle(pid=process.pid or 0, process=process)
         self._active[handle.pid] = handle
         if on_process_start is not None and handle.pid:
             await on_process_start(handle.pid)
 
-        async def read_stdout() -> bytes:
-            chunks: list[bytes] = []
+        # Collected outside the readers so a timeout keeps whatever arrived so far.
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def read_stdout() -> None:
             assert process.stdout is not None
             async for line in _iter_stdout_lines(process.stdout):
-                chunks.append(line)
+                stdout_chunks.append(line)
                 if on_stdout_line is not None:
                     await on_stdout_line(line.decode("utf-8", errors="replace").rstrip())
-            return b"".join(chunks)
 
-        async def read_stderr() -> bytes:
-            chunks: list[bytes] = []
+        async def read_stderr() -> None:
             assert process.stderr is not None
             while True:
                 chunk = await process.stderr.read(_READ_CHUNK_SIZE)
                 if not chunk:
                     break
-                chunks.append(chunk)
-            return b"".join(chunks)
+                stderr_chunks.append(chunk)
 
+        timed_out = False
+        user_cancelled = False
         try:
-            stdout_bytes, stderr_bytes, _returncode = await asyncio.wait_for(
+            await asyncio.wait_for(
                 asyncio.gather(read_stdout(), read_stderr(), process.wait()),
                 timeout=timeout_seconds,
             )
-            _ = process.returncode
         except TimeoutError:
+            timed_out = True
+            user_cancelled = handle.cancelled
             await self.cancel(handle.pid)
-            return RunResult(
-                returncode=None,
-                stdout="",
-                stderr="Process timed out",
-                cancelled=True,
-            )
+            await self._reap(process)
         finally:
             self._active.pop(handle.pid, None)
+
+        stdout_bytes = b"".join(stdout_chunks)
+        stderr_bytes = b"".join(stderr_chunks)
+        if timed_out:
+            stderr_bytes += b"\nProcess timed out"
 
         max_bytes = self._settings.cursor_agent_max_output_bytes
         stdout_raw = stdout_bytes.decode("utf-8", errors="replace")
@@ -107,8 +118,10 @@ class ProcessRunner:
             stderr=(
                 sanitize_for_telegram(stderr_raw, max_bytes) if sanitize_output else stderr_raw
             ),
-            cancelled=handle.cancelled,
+            # A timeout kills the process group, so only report a real cancel as cancelled.
+            cancelled=user_cancelled if timed_out else handle.cancelled,
             truncated=truncated,
+            timed_out=timed_out,
         )
 
     async def cancel(self, pid: int) -> bool:
@@ -121,9 +134,18 @@ class ProcessRunner:
             await asyncio.sleep(0.5)
             if handle.process.returncode is None:
                 os.killpg(os.getpgid(handle.pid), signal.SIGKILL)
-        except ProcessLookupError:
+        except OSError:
+            # Already gone, or the group is no longer ours to signal.
             pass
         return True
+
+    @staticmethod
+    async def _reap(process: asyncio.subprocess.Process) -> None:
+        """Collect the exit status so a killed agent cannot linger as a zombie."""
+        if process.returncode is not None:
+            return
+        with contextlib.suppress(TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(process.wait(), timeout=5)
 
     async def cancel_all(self) -> int:
         count = 0

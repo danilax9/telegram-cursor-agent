@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -44,8 +43,8 @@ class CursorUsageService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def fetch_usage(self) -> CursorUsageSnapshot:
-        token = self._load_access_token()
+    async def fetch_usage(self, auth_file: Path | None = None) -> CursorUsageSnapshot:
+        token = self._load_access_token(auth_file)
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -56,7 +55,9 @@ class CursorUsageService:
             plan_response = await client.post(PLAN_INFO_PATH, headers=headers, json={})
 
         if usage_response.status_code in {401, 403}:
-            raise CursorUsageError("Cursor session expired. Run `agent login` on the server.")
+            raise CursorUsageError(
+                "Cursor session expired. Run `agent login` on the server."
+            )
         usage_response.raise_for_status()
         plan_response.raise_for_status()
 
@@ -64,27 +65,39 @@ class CursorUsageService:
         plan_payload = plan_response.json()
         return self._parse_snapshot(usage_payload, plan_payload)
 
-    def _load_access_token(self) -> str:
-        for path in self._auth_file_candidates():
-            if not path.is_file():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            token = data.get("accessToken") or data.get("access_token")
-            if isinstance(token, str) and token.strip():
-                return token.strip()
-        searched = ", ".join(str(path) for path in self._auth_file_candidates())
+    def _load_access_token(self, auth_file: Path | None = None) -> str:
+        for path in self._auth_file_candidates(auth_file):
+            token = self._load_access_token_from_file(path)
+            if token:
+                return token
+        searched = ", ".join(str(path) for path in self._auth_file_candidates(auth_file))
         raise CursorUsageError(f"Cursor auth token not found. Checked: {searched}")
 
-    def _auth_file_candidates(self) -> list[Path]:
+    @staticmethod
+    def _load_access_token_from_file(path: Path) -> str | None:
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        token = data.get("accessToken") or data.get("access_token")
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+        return None
+
+    def _auth_file_candidates(self, auth_file: Path | None = None) -> list[Path]:
         home = Path.home()
-        candidates = [
-            self._settings.cursor_auth_file,
-            home / ".config" / "cursor" / "auth.json",
-            home / ".config" / "Cursor" / "auth.json",
-        ]
+        candidates: list[Path] = []
+        if auth_file is not None:
+            candidates.append(auth_file)
+        candidates.extend(
+            [
+                self._settings.cursor_auth_file,
+                home / ".config" / "cursor" / "auth.json",
+                home / ".config" / "Cursor" / "auth.json",
+            ]
+        )
         unique: list[Path] = []
         for path in candidates:
             if path not in unique:
@@ -140,35 +153,35 @@ def format_usage_message(snapshot: CursorUsageSnapshot) -> str:
         f"{snapshot.billing_cycle_end.strftime('%d.%m.%Y')}"
     )
     lines = [
-        f"<b>Лимиты Cursor — {html.escape(snapshot.plan_name)}</b>",
+        f"*Лимиты Cursor — {snapshot.plan_name}*",
         "",
-        f"Период: {html.escape(period)}",
+        f"Период: {period}",
     ]
     if snapshot.plan_price:
-        lines.append(f"Тариф: {html.escape(snapshot.plan_price)}")
+        lines.append(f"Тариф: {snapshot.plan_price}")
     if snapshot.included_amount_usd is not None:
         lines.append(f"Included usage: ${snapshot.included_amount_usd:.2f}")
 
     lines.extend(
         [
             "",
-            f"<b>{html.escape(snapshot.cursor_models.label)}</b>",
-            html.escape(_format_percent(snapshot.cursor_models.percent_used)),
+            f"*{snapshot.cursor_models.label}*",
+            _format_percent(snapshot.cursor_models.percent_used),
             "",
-            f"<b>{html.escape(snapshot.other_models.label)}</b>",
-            html.escape(_format_percent(snapshot.other_models.percent_used)),
+            f"*{snapshot.other_models.label}*",
+            _format_percent(snapshot.other_models.percent_used),
             "",
-            "<b>Общий included usage</b>",
-            html.escape(_format_percent(snapshot.total_percent_used)),
+            "*Общий included usage*",
+            _format_percent(snapshot.total_percent_used),
         ]
     )
 
     if snapshot.display_message:
-        lines.extend(["", f"<i>{html.escape(snapshot.display_message)}</i>"])
+        lines.extend(["", f"_{snapshot.display_message}_"])
 
     lines.extend([
         "",
-        '<a href="https://cursor.com/dashboard/spending">Spending dashboard</a>',
+        "[Spending dashboard](https://cursor.com/dashboard/spending)",
     ])
     return "\n".join(lines)
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import html
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from telegram_cursor_agent.database.models.session import AgentSession
+from telegram_cursor_agent.telegram.markdown import md_bold, md_code
 
 
 def short_session_id(session_id: UUID) -> str:
@@ -56,10 +56,10 @@ def format_session_line(
         status = " (архив)"
     elif session.status == "deleted":
         status = " (удалена)"
-    name = html.escape(session_display_name(session))
+    name = session_display_name(session)
     return (
-        f"{prefix}{active_marker}<code>{name}</code> — "
-        f"{html.escape(workspace_label(session.workspace_path))} — "
+        f"{prefix}{active_marker}{md_code(name)} — "
+        f"{workspace_label(session.workspace_path)} — "
         f"{format_last_active(session.last_active_at)}{status}"
     )
 
@@ -67,7 +67,7 @@ def format_session_line(
 def format_session_list(sessions: list[AgentSession], active_id: UUID | None) -> str:
     if not sessions:
         return "Нет сохранённых сессий. Отправь сообщение агенту или используй /new."
-    lines = ["<b>Сессии Cursor:</b>", ""]
+    lines = [md_bold("Сессии Cursor:"), ""]
     for index, session in enumerate(sessions, start=1):
         lines.append(
             format_session_line(

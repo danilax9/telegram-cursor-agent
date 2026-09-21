@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.execution.runner import ProcessRunner
+from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+from telegram_cursor_agent.services.image_attachments import StoredImage
 
 
 @pytest.fixture
@@ -44,6 +46,32 @@ async def test_agent_prompt_queues_task(
     )
     assert result.result_type == ActionResultType.TASK_QUEUED
     mock_queue.enqueue.assert_called_once()
+
+
+async def test_agent_prompt_with_image_includes_path(
+    db_session: AsyncSession, test_settings, runner: ProcessRunner, mock_queue
+) -> None:
+    user_id = await _create_user(db_session)
+    service = ActionService(db_session, test_settings, runner, mock_queue)
+    stored_path = "/data/uploads/test.jpg"
+    result = await service.handle_text(
+        user_id,
+        "опиши картинку",
+        str(test_settings.workspace_base),
+        image_attachments=[
+            StoredImage(
+                path=stored_path,
+                filename="test.jpg",
+                mime_type="image/jpeg",
+            )
+        ],
+    )
+    assert result.result_type == ActionResultType.TASK_QUEUED
+    tasks = TaskRepository(db_session)
+    task = await tasks.get_by_id(result.task_id)
+    assert task is not None
+    agent_path = str(test_settings.agent_upload_storage_path / "test.jpg")
+    assert agent_path in (task.payload or "")
 
 
 async def test_sensitive_command_requires_confirmation(

@@ -71,8 +71,21 @@ class Settings(BaseSettings):
         default=Path.home() / ".config" / "cursor" / "auth.json",
         validation_alias=AliasChoices("CURSOR_AUTH_FILE"),
     )
-    task_timeout: int = Field(
+    cursor_accounts_file: Path = Field(
+        default=Path("/root/.cursor-accounts/accounts.json"),
+        validation_alias=AliasChoices("CURSOR_ACCOUNTS_FILE"),
+    )
+    cursor_accounts_dir: Path = Field(
+        default=Path("/root/.cursor-accounts"),
+        validation_alias=AliasChoices("CURSOR_ACCOUNTS_DIR"),
+    )
+    cursor_account_login_timeout_seconds: int = Field(
         default=600,
+        validation_alias=AliasChoices("CURSOR_ACCOUNT_LOGIN_TIMEOUT_SECONDS"),
+    )
+    task_timeout: int = Field(
+        # Real agent runs routinely pass ten minutes; a short cap killed useful work.
+        default=3600,
         validation_alias=AliasChoices("TASK_TIMEOUT", "CURSOR_AGENT_TIMEOUT_SECONDS"),
     )
     cursor_agent_max_output_bytes: int = Field(
@@ -141,6 +154,10 @@ class Settings(BaseSettings):
         default=Path("/data/uploads"),
         validation_alias=AliasChoices("UPLOAD_STORAGE_PATH"),
     )
+    upload_host_path: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("UPLOAD_HOST_PATH"),
+    )
     max_upload_bytes: int = Field(
         default=10_485_760,
         validation_alias=AliasChoices("MAX_UPLOAD_BYTES"),
@@ -156,6 +173,76 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="production", validation_alias=AliasChoices("APP_ENV"))
 
+    sandbox_open: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SANDBOX_OPEN"),
+    )
+    self_deploy_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SELF_DEPLOY_ENABLED"),
+    )
+    self_repo_root: Path = Field(
+        default=Path("/root/telegram-cursor-agent"),
+        validation_alias=AliasChoices("SELF_REPO_ROOT"),
+    )
+    agent_workspace: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AGENT_WORKSPACE"),
+    )
+    deploy_script: Path = Field(
+        default=Path("/root/telegram-cursor-agent/scripts/deploy-self.sh"),
+        validation_alias=AliasChoices("DEPLOY_SCRIPT"),
+    )
+    worker_service_name: str = Field(
+        default="telegram-cursor-agent-worker",
+        validation_alias=AliasChoices("WORKER_SERVICE_NAME"),
+    )
+    bot_compose_service: str = Field(
+        default="bot",
+        validation_alias=AliasChoices("BOT_COMPOSE_SERVICE"),
+    )
+    cursor_mcp_config_path: Path = Field(
+        default=Path.home() / ".cursor" / "mcp.json",
+        validation_alias=AliasChoices("CURSOR_MCP_CONFIG_PATH"),
+    )
+    cursor_approve_mcps: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CURSOR_APPROVE_MCPS"),
+    )
+    mcp_setup_ttl_seconds: int = Field(
+        default=3600,
+        validation_alias=AliasChoices("MCP_SETUP_TTL_SECONDS"),
+    )
+    deploy_recovery_delay_seconds: int = Field(
+        default=3,
+        validation_alias=AliasChoices("DEPLOY_RECOVERY_DELAY_SECONDS"),
+    )
+    deploy_worker_ready_key: str = Field(
+        default="tca:worker:ready",
+        validation_alias=AliasChoices("DEPLOY_WORKER_READY_KEY"),
+    )
+    deploy_worker_restart_key: str = Field(
+        default="tca:worker:restart_pending",
+        validation_alias=AliasChoices("DEPLOY_WORKER_RESTART_KEY"),
+    )
+
+    @field_validator(
+        "sandbox_open",
+        "self_deploy_enabled",
+        "cursor_approve_mcps",
+        mode="before",
+    )
+    @classmethod
+    def parse_bool_flags(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return value
+
+    @field_validator("self_repo_root", "deploy_script", "cursor_mcp_config_path", mode="before")
+    @classmethod
+    def parse_self_deploy_paths(cls, value: object) -> Path:
+        return _parse_single_path(value)
+
     @field_validator("log_json", mode="before")
     @classmethod
     def parse_bool(cls, value: object) -> object:
@@ -164,7 +251,11 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "task_timeout", "cursor_agent_max_output_bytes", "max_upload_bytes", mode="before"
+        "task_timeout",
+        "cursor_agent_max_output_bytes",
+        "cursor_account_login_timeout_seconds",
+        "max_upload_bytes",
+        mode="before",
     )
     @classmethod
     def parse_int(cls, value: object) -> object:
@@ -183,12 +274,26 @@ class Settings(BaseSettings):
             return [int(item) for item in value]
         return value
 
+    @field_validator("upload_host_path", mode="before")
+    @classmethod
+    def parse_optional_path(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        return _parse_single_path(value)
+
     @field_validator("project_search_roots", "allowed_project_roots", mode="before")
     @classmethod
     def parse_path_lists(cls, value: object) -> list[Path]:
         return parse_path_list(value)
 
-    @field_validator("projects_root", "upload_storage_path", "cursor_auth_file", mode="before")
+    @field_validator(
+        "projects_root",
+        "upload_storage_path",
+        "cursor_auth_file",
+        "cursor_accounts_file",
+        "cursor_accounts_dir",
+        mode="before",
+    )
     @classmethod
     def parse_paths(cls, value: object) -> Path:
         return _parse_single_path(value)
@@ -207,13 +312,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_roots(self) -> Self:
-        if not self.project_search_roots and not self.allowed_project_roots:
+        if self.sandbox_open:
+            self.allowed_project_roots = [Path("/")]
+            self.project_search_roots = [Path("/"), self.projects_root]
+            if self.agent_workspace is None:
+                self.agent_workspace = Path("/")
+        elif not self.project_search_roots and not self.allowed_project_roots:
             self.project_search_roots = [self.projects_root]
             self.allowed_project_roots = [self.projects_root]
         elif not self.project_search_roots:
             self.project_search_roots = list(self.allowed_project_roots)
         elif not self.allowed_project_roots:
             self.allowed_project_roots = list(self.project_search_roots)
+
+        if self.self_deploy_enabled:
+            repo_root = self.self_repo_root.resolve()
+            if repo_root not in self.allowed_project_roots:
+                self.allowed_project_roots.append(repo_root)
+            if repo_root not in self.project_search_roots:
+                self.project_search_roots.append(repo_root)
+
         return self
 
     # Backward-compatible accessors used across the codebase.
@@ -230,6 +348,23 @@ class Settings(BaseSettings):
         return self.projects_root
 
     @property
+    def agent_upload_storage_path(self) -> Path:
+        """Upload directory visible to cursor-agent on the host worker."""
+        if self.upload_host_path is not None:
+            return self.upload_host_path
+        return self.upload_storage_path
+
+    @property
+    def effective_projects_root(self) -> Path:
+        """Workspace root that exists in the current runtime (host vs Docker)."""
+        if self.projects_root.is_dir():
+            return self.projects_root
+        container_root = Path("/workspace")
+        if container_root.is_dir():
+            return container_root
+        return self.projects_root
+
+    @property
     def project_discovery_roots(self) -> list[Path]:
         return self.allowed_project_roots
 
@@ -240,6 +375,22 @@ class Settings(BaseSettings):
     @property
     def cursor_agent_timeout_seconds(self) -> int:
         return self.task_timeout
+
+    @property
+    def resolved_agent_workspace(self) -> Path:
+        if self.agent_workspace is not None:
+            return self.agent_workspace
+        return self.projects_root
+
+    @property
+    def effective_allowed_command_prefixes(self) -> list[str]:
+        prefixes = list(self.allowed_command_prefixes)
+        if not self.self_deploy_enabled:
+            return prefixes
+        for extra in ("bash", "sh", "systemctl", "docker", "uv", "make", "sudo"):
+            if extra not in prefixes:
+                prefixes.append(extra)
+        return prefixes
 
 
 @lru_cache

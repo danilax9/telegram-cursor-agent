@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.database.repositories.user import UserRepository
-from telegram_cursor_agent.services.uploads import UploadService
+from telegram_cursor_agent.services.uploads import UploadService, agent_visible_upload_path
 
 
 async def test_store_upload(db_session: AsyncSession, test_settings) -> None:
@@ -31,6 +31,20 @@ async def test_reject_oversized(db_session: AsyncSession, test_settings) -> None
     service = UploadService(db_session, limited_settings)
     with pytest.raises(ValueError, match="exceeds max size"):
         await service.store(user_id=user.id, filename="big.bin", data=b"x" * 100)
+
+
+def test_agent_visible_upload_path_maps_container_to_host(test_settings) -> None:
+    settings = test_settings.model_copy(
+        update={
+            "upload_storage_path": "/data/uploads",
+            "upload_host_path": "/root/telegram-cursor-agent/data/uploads",
+        }
+    )
+    mapped = agent_visible_upload_path(
+        "/data/uploads/abc_photo.jpg",
+        settings,
+    )
+    assert mapped == "/root/telegram-cursor-agent/data/uploads/abc_photo.jpg"
 
 
 async def test_resolve_upload_path_traversal(

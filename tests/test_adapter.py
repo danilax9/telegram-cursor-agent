@@ -7,7 +7,7 @@ def test_build_command_basic(test_settings, runner) -> None:
     adapter = CursorAgentAdapter(test_settings, runner)
     cmd = adapter.build_command("/workspace/proj", "fix the bug")
     assert cmd == [
-        "cursor-agent",
+        test_settings.cursor_agent_bin,
         "--print",
         "--output-format",
         "stream-json",
@@ -18,8 +18,20 @@ def test_build_command_basic(test_settings, runner) -> None:
         "--force",
         "--sandbox",
         "disabled",
+        "--approve-mcps",
         "fix the bug",
     ]
+
+
+def test_build_command_uses_model_from_projects_root(
+    test_settings, runner, tmp_workspace
+) -> None:
+    (tmp_workspace / ".cursor_model").write_text("gpt-5\n")
+    settings = test_settings.model_copy(update={"projects_root": tmp_workspace})
+    adapter = CursorAgentAdapter(settings, runner)
+    cmd = adapter.build_command("/", "hello")
+    assert "--model" in cmd
+    assert "gpt-5" in cmd
 
 
 def test_build_command_with_resume(test_settings, runner) -> None:

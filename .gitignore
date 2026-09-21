@@ -1,4 +1,7 @@
 .env
+.deploy-pending.json
+data/uploads/*
+!data/uploads/.gitkeep
 __pycache__/
 *.py[cod]
 *.egg-info/

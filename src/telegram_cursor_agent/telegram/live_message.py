@@ -4,6 +4,17 @@ from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
+_PROGRESS_PREFIX = "💭 "
+
+
+def format_progress_message(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if stripped.startswith("💭"):
+        return stripped
+    return f"{_PROGRESS_PREFIX}{stripped}"
+
 
 class LiveMessageNotifier:
     """Send once, then replace the same message on every progress update."""
@@ -23,7 +34,8 @@ class LiveMessageNotifier:
 
     async def update(self, text: str) -> None:
         safe_text = sanitize_for_telegram(
-            text.strip(), self._settings.cursor_agent_max_output_bytes
+            format_progress_message(text),
+            self._settings.cursor_agent_max_output_bytes,
         )
         if not safe_text or safe_text == self._last_text:
             return

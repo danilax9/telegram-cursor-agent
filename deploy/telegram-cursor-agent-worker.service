@@ -12,9 +12,18 @@ Environment=DATABASE_URL=postgresql+asyncpg://tca:tca_secret@127.0.0.1:5433/tele
 Environment=REDIS_URL=redis://127.0.0.1:6380/0
 Environment=CURSOR_CLI_PATH=/root/.local/bin/agent
 Environment=PROJECTS_ROOT=/root/telegram-cursor-agent/workspace
-Environment=PROJECT_SEARCH_ROOTS=/root/telegram-cursor-agent/workspace
-Environment=ALLOWED_PROJECT_ROOTS=/root/telegram-cursor-agent/workspace
+Environment=PROJECT_SEARCH_ROOTS=/root/telegram-cursor-agent/workspace,/root/telegram-cursor-agent
+Environment=ALLOWED_PROJECT_ROOTS=/
+Environment=SANDBOX_OPEN=true
+Environment=SELF_DEPLOY_ENABLED=true
+Environment=SELF_REPO_ROOT=/root/telegram-cursor-agent
+Environment=AGENT_WORKSPACE=/
+Environment=DEPLOY_SCRIPT=/root/telegram-cursor-agent/scripts/deploy-self.sh
 Environment=UPLOAD_STORAGE_PATH=/root/telegram-cursor-agent/data/uploads
+Environment=CURSOR_MCP_CONFIG_PATH=/root/.cursor/mcp.json
+Environment=CURSOR_APPROVE_MCPS=true
+Environment=CURSOR_ACCOUNTS_FILE=/root/.cursor-accounts/accounts.json
+Environment=CURSOR_ACCOUNTS_DIR=/root/.cursor-accounts
 ExecStart=/root/.hermes/bin/uv run telegram-cursor-worker
 Restart=always
 RestartSec=3

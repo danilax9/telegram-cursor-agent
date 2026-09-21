@@ -1,20 +1,20 @@
 """Refresh the Cursor CLI model catalog for the Telegram bot."""
 
-import json
 import subprocess
-from pathlib import Path
 
+from telegram_cursor_agent.core.config import get_settings
+from telegram_cursor_agent.services.cursor_models import (
+    parse_models_output,
+    write_models_catalog,
+)
+
+settings = get_settings()
 result = subprocess.run(
-    ["/root/.local/bin/agent", "models"], capture_output=True, text=True, check=True
+    [settings.cursor_agent_bin, "models"],
+    capture_output=True,
+    text=True,
+    check=True,
 )
-models = []
-for line in result.stdout.splitlines():
-    if " - " not in line or line.startswith(("Available", "Tip:")):
-        continue
-    model_id, label = line.split(" - ", 1)
-    if model_id and " " not in model_id:
-        models.append({"id": model_id, "label": label})
-Path("/root/telegram-cursor-agent/workspace/cursor-models.json").write_text(
-    json.dumps(models, ensure_ascii=False)
-)
-print(f"models={len(models)}")
+models = parse_models_output(result.stdout)
+path = write_models_catalog(settings, models)
+print(f"models={len(models)} path={path}")

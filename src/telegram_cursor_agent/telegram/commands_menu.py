@@ -14,6 +14,10 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="summarize", description="Сжать контекст чата"),
     BotCommand(command="context", description="Что занимает контекст"),
     BotCommand(command="limits", description="Лимиты плана Cursor"),
+    BotCommand(command="account", description="Аккаунты Cursor"),
+    BotCommand(command="deploy", description="Обновить и перезапустить бота"),
+    BotCommand(command="mcp", description="MCP: список и установка"),
+    BotCommand(command="access", description="Управление доступом к боту"),
 ]
 
 

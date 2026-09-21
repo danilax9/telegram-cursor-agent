@@ -6,6 +6,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
@@ -16,7 +17,7 @@ class TelegramNotifier:
         self._settings = settings
         self._bot = Bot(
             token=settings.bot_token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
         )
 
     async def send(self, telegram_id: int, text: str) -> None:
@@ -28,6 +29,33 @@ class TelegramNotifier:
                 # Cursor occasionally emits invalid HTML despite its prompt.
                 # Deliver the content rather than failing the whole task.
                 await self._bot.send_message(telegram_id, chunk, parse_mode=None)
+
+    async def send_with_url_button(
+        self,
+        telegram_id: int,
+        text: str,
+        *,
+        button_text: str,
+        url: str,
+    ) -> None:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=button_text, url=url)]]
+        )
+        safe_text = sanitize_for_telegram(text, self._settings.cursor_agent_max_output_bytes)
+        for index, chunk in enumerate(split_telegram_message(safe_text)):
+            try:
+                await self._bot.send_message(
+                    telegram_id,
+                    chunk,
+                    reply_markup=keyboard if index == 0 else None,
+                )
+            except TelegramBadRequest:
+                await self._bot.send_message(
+                    telegram_id,
+                    chunk,
+                    reply_markup=keyboard if index == 0 else None,
+                    parse_mode=None,
+                )
 
     async def send_live_start(self, telegram_id: int, text: str) -> int:
         try:
@@ -58,9 +86,21 @@ class TelegramNotifier:
                     raise
 
     async def keep_typing(self, telegram_id: int) -> None:
-        while True:
-            await self._bot.send_chat_action(telegram_id, "typing")
-            await asyncio.sleep(4)
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        self._bot.send_chat_action(telegram_id, "typing"),
+                        timeout=10.0,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Typing is cosmetic: never let a transient API error end the loop.
+                    pass
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            raise
 
     async def close(self) -> None:
         await self._bot.session.close()
