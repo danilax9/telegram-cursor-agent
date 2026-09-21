@@ -39,7 +39,18 @@ need_cmd() {
 }
 
 is_interactive() {
-  [[ "${TCA_NONINTERACTIVE}" != "1" && -t 0 ]]
+  if [[ "${TCA_NONINTERACTIVE}" == "1" ]]; then
+    return 1
+  fi
+  [[ -t 0 || -r /dev/tty ]]
+}
+
+read_prompt() {
+  if [[ -t 0 ]]; then
+    read -r "$@"
+  else
+    read -r "$@" </dev/tty
+  fi
 }
 
 run() {
@@ -62,10 +73,10 @@ prompt() {
     die "Missing required value for: ${message}"
   fi
   if [[ -n "${default}" ]]; then
-    read -r -p "${message} [${default}]: " value
+    read_prompt -p "${message} [${default}]: " value
     echo "${value:-${default}}"
   else
-    read -r -p "${message}: " value
+    read_prompt -p "${message}: " value
     echo "${value}"
   fi
 }
@@ -80,8 +91,8 @@ prompt_secret() {
     fi
     die "Missing BOT_TOKEN in non-interactive mode"
   fi
-  read -r -s -p "${message}: " value
-  echo ""
+  read_prompt -s -p "${message}: " value
+  echo "" >/dev/tty 2>/dev/null || echo ""
   if [[ -z "${value}" ]]; then
     die "Значение не может быть пустым"
   fi
@@ -231,7 +242,7 @@ cursor_login_interactive() {
   if [[ -f "${CURSOR_AUTH_FILE}" ]]; then
     if is_interactive; then
       local reuse=""
-      read -r -p "Cursor уже авторизован (${CURSOR_AUTH_FILE}). Перелогиниться? [y/N]: " reuse
+      read_prompt -p "Cursor уже авторизован (${CURSOR_AUTH_FILE}). Перелогиниться? [y/N]: " reuse
       if [[ ! "${reuse}" =~ ^[Yy]$ ]]; then
         log "Using existing Cursor auth"
         return 0

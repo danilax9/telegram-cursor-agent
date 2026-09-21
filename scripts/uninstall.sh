@@ -24,7 +24,18 @@ die() {
 }
 
 is_interactive() {
-  [[ "${TCA_NONINTERACTIVE}" != "1" && -t 0 ]]
+  if [[ "${TCA_NONINTERACTIVE}" == "1" ]]; then
+    return 1
+  fi
+  [[ -t 0 || -r /dev/tty ]]
+}
+
+read_prompt() {
+  if [[ -t 0 ]]; then
+    read -r "$@"
+  else
+    read -r "$@" </dev/tty
+  fi
 }
 
 run() {
@@ -49,7 +60,7 @@ confirm() {
     return
   fi
   local answer=""
-  read -r -p "${message} [${default}/$( [[ "${default}" == "Y" ]] && echo n || echo y )]: " answer
+  read_prompt -p "${message} [${default}/$( [[ "${default}" == "Y" ]] && echo n || echo y )]: " answer
   answer="${answer:-${default}}"
   [[ "${answer}" =~ ^[Yy]$ ]]
 }

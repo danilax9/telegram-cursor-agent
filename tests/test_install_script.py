@@ -19,6 +19,8 @@ def test_install_script_contains_required_prompts() -> None:
     assert "loginDeepControl" in content
     assert "write_env_file" in content
     assert "install_worker_service" in content
+    assert "read_prompt" in content
+    assert "/dev/tty" in content
 
 
 def test_bootstrap_script_documents_one_liner() -> None:
