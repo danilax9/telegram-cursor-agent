@@ -4,12 +4,19 @@ import asyncio
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.core.logging import get_logger
 from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
+from telegram_cursor_agent.services.outbound_attachments import (
+    OutboundAttachment,
+    is_image_attachment,
+)
+
+logger = get_logger(__name__)
 
 
 class TelegramNotifier:
@@ -65,11 +72,19 @@ class TelegramNotifier:
         return message.message_id
 
     async def edit_live_message(
-        self, telegram_id: int, message_id: int, text: str
+        self,
+        telegram_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
         try:
             await self._bot.edit_message_text(
-                text, chat_id=telegram_id, message_id=message_id
+                text,
+                chat_id=telegram_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
             )
         except TelegramBadRequest as exc:
             if "message is not modified" in str(exc).lower():
@@ -79,18 +94,63 @@ class TelegramNotifier:
                     text,
                     chat_id=telegram_id,
                     message_id=message_id,
+                    reply_markup=reply_markup,
                     parse_mode=None,
                 )
             except TelegramBadRequest as retry_exc:
                 if "message is not modified" not in str(retry_exc).lower():
                     raise
 
+    async def send_attachments(
+        self,
+        telegram_id: int,
+        attachments: list[OutboundAttachment],
+    ) -> list[str]:
+        """Upload files to Telegram. Returns human-readable errors for failures."""
+        errors: list[str] = []
+        for attachment in attachments:
+            path = attachment.path
+            caption = attachment.caption
+            file_input = FSInputFile(path, filename=path.name)
+            try:
+                if is_image_attachment(path):
+                    await self._bot.send_photo(
+                        telegram_id,
+                        file_input,
+                        caption=caption,
+                    )
+                else:
+                    await self._bot.send_document(
+                        telegram_id,
+                        file_input,
+                        caption=caption,
+                    )
+            except TelegramBadRequest as exc:
+                msg = f"`{path}` — Telegram отклонил файл: {exc}"
+                errors.append(msg)
+                logger.warning(
+                    "telegram_attachment_rejected",
+                    path=str(path),
+                    error=str(exc),
+                )
+            except Exception as exc:
+                msg = f"`{path}` — ошибка отправки: {exc}"
+                errors.append(msg)
+                logger.exception("telegram_attachment_failed", path=str(path))
+        return errors
+
+    async def send_typing_once(self, telegram_id: int) -> None:
+        try:
+            await self._bot.send_chat_action(telegram_id, ChatAction.TYPING)
+        except Exception:
+            pass
+
     async def keep_typing(self, telegram_id: int) -> None:
         try:
             while True:
                 try:
                     await asyncio.wait_for(
-                        self._bot.send_chat_action(telegram_id, "typing"),
+                        self._bot.send_chat_action(telegram_id, ChatAction.TYPING),
                         timeout=10.0,
                     )
                 except asyncio.CancelledError:

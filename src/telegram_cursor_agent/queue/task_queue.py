@@ -11,11 +11,18 @@ from telegram_cursor_agent.core.config import Settings
 TASK_QUEUE_KEY = "tca:tasks"
 TASK_NOTIFY_CHANNEL = "tca:task_notify"
 TASK_CANCEL_CHANNEL = "tca:task_cancel"
+SESSION_REDIRECT_CHANNEL = "tca:session_redirect"
 
 
 class TaskQueue:
-    def __init__(self, redis_client: Redis) -> None:  # type: ignore[type-arg]
+    def __init__(
+        self,
+        redis_client: Redis,  # type: ignore[type-arg]
+        *,
+        pubsub_redis: Redis | None = None,  # type: ignore[type-arg]
+    ) -> None:
         self._redis = redis_client
+        self._pubsub_redis = pubsub_redis or redis_client
 
     async def enqueue(self, task_id: str) -> None:
         await self._redis.rpush(TASK_QUEUE_KEY, task_id)
@@ -39,7 +46,7 @@ class TaskQueue:
         await self._redis.publish(TASK_CANCEL_CHANNEL, task_id)
 
     async def listen_cancel(self) -> AsyncIterator[str]:
-        pubsub = self._redis.pubsub()
+        pubsub = self._pubsub_redis.pubsub()
         await pubsub.subscribe(TASK_CANCEL_CHANNEL)
         try:
             async for message in pubsub.listen():
@@ -50,6 +57,22 @@ class TaskQueue:
         finally:
             await pubsub.unsubscribe(TASK_CANCEL_CHANNEL)
             await pubsub.close()
+
+    async def listen_session_redirect(self) -> AsyncIterator[str]:
+        pubsub = self._pubsub_redis.pubsub()
+        await pubsub.subscribe(SESSION_REDIRECT_CHANNEL)
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                session_id = message["data"]
+                yield session_id.decode() if isinstance(session_id, bytes) else str(session_id)
+        finally:
+            await pubsub.unsubscribe(SESSION_REDIRECT_CHANNEL)
+            await pubsub.close()
+
+    async def publish_session_redirect(self, session_id: str) -> None:
+        await self._redis.publish(SESSION_REDIRECT_CHANNEL, session_id)
 
 
 async def create_redis(settings: Settings) -> Redis:  # type: ignore[type-arg]

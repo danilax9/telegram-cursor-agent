@@ -5,7 +5,8 @@ from aiogram.types import BotCommand
 
 
 BOT_COMMANDS: list[BotCommand] = [
-    BotCommand(command="start", description="Запуск бота"),
+    BotCommand(command="start", description="Запуск и главное меню"),
+    BotCommand(command="menu", description="Главное меню с кнопками"),
     BotCommand(command="help", description="Справка по командам"),
     BotCommand(command="model", description="Выбор модели Cursor"),
     BotCommand(command="new", description="Новая сессия"),

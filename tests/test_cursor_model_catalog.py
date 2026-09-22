@@ -45,8 +45,11 @@ def test_detect_family() -> None:
         "Cursor",
     )
     assert detect_family("auto", "Auto (default)") == ("cursor", "Cursor")
-    assert detect_family("gpt-5.3-codex-high", "Codex 5.3 High") == ("gpt", "GPT")
-    assert detect_family("gpt-5.2", "GPT-5.2") == ("gpt", "GPT")
+    assert detect_family("gpt-5.3-codex-high", "Codex 5.3 High") == (
+        "gpt",
+        "ChatGPT",
+    )
+    assert detect_family("gpt-5.2", "GPT-5.2") == ("gpt", "ChatGPT")
     assert detect_family("claude-opus-5-high", "Claude Opus 5 1M") == (
         "claude",
         "Claude",

@@ -24,6 +24,7 @@ Environment=CURSOR_MCP_CONFIG_PATH=/root/.cursor/mcp.json
 Environment=CURSOR_APPROVE_MCPS=true
 Environment=CURSOR_ACCOUNTS_FILE=/root/.cursor-accounts/accounts.json
 Environment=CURSOR_ACCOUNTS_DIR=/root/.cursor-accounts
+Environment=UV_BIN=/root/.hermes/bin/uv
 ExecStart=/root/.hermes/bin/uv run telegram-cursor-worker
 Restart=always
 RestartSec=3

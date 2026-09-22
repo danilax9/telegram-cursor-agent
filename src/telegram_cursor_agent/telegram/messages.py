@@ -1,8 +1,8 @@
 """Telegram message templates."""
 
 START_MESSAGE = (
-    "Welcome to the Cursor Remote Agent.\n"
-    "Send a coding prompt or type `help` for commands."
+    "Привет! Я *Cursor Agent* на сервере.\n\n"
+    "Задачи — обычным сообщением. Настройки и команды — в *панели* ниже."
 )
 
 UNAUTHORIZED_MESSAGE = "You are not authorized to use this bot."

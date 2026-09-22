@@ -4,15 +4,16 @@ from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
-_PROGRESS_PREFIX = "💭 "
+THINKING_STATUS_TEXT = "🧠 Думаю"
+_PROGRESS_PREFIX = "💬 "
 
 
 def format_progress_message(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return ""
-    if stripped.startswith("💭"):
-        return stripped
+    if stripped.startswith("💬") or stripped.startswith("💭"):
+        return stripped.replace("💭 ", "💬 ", 1) if stripped.startswith("💭") else stripped
     return f"{_PROGRESS_PREFIX}{stripped}"
 
 
@@ -37,6 +38,17 @@ class LiveMessageNotifier:
             format_progress_message(text),
             self._settings.cursor_agent_max_output_bytes,
         )
+        await self._apply_live_text(safe_text)
+
+    async def update_status(self, text: str) -> None:
+        """Task-level status (redirect, resume) without the thought prefix."""
+        safe_text = sanitize_for_telegram(
+            text.strip(),
+            self._settings.cursor_agent_max_output_bytes,
+        )
+        await self._apply_live_text(safe_text)
+
+    async def _apply_live_text(self, safe_text: str) -> None:
         if not safe_text or safe_text == self._last_text:
             return
 

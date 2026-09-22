@@ -62,6 +62,24 @@ def load_models(settings: Settings) -> list[dict[str, str]]:
     return raw
 
 
+def load_selected_model_id(settings: Settings) -> str | None:
+    path = model_selection_path(settings)
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return raw or None
+
+
+def resolve_model_label(models: list[dict[str, str]], model_id: str) -> str:
+    for item in models:
+        if item.get("id") == model_id:
+            return str(item["label"])
+    return model_id
+
+
 def save_selected_model(settings: Settings, model_id: str) -> None:
     path = model_selection_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +96,9 @@ def parse_models_output(stdout: str) -> list[dict[str, str]]:
         if model_id and " " not in model_id:
             models.append({"id": model_id, "label": label.strip()})
     return models
+
+
+REFRESH_MODELS_MENU_UPDATED = "__refresh_models_menu_updated__"
 
 
 def write_models_catalog(settings: Settings, models: list[dict[str, str]]) -> Path:

@@ -98,6 +98,38 @@ def _base_label_from_full(full_label: str, tier_parts: list[str]) -> str:
     return ""
 
 
+def friendly_tier_label(tier_label: str) -> str:
+    """Короткие подписи режимов для Telegram-кнопок."""
+    if not tier_label or tier_label == "Default":
+        return "Стандарт"
+    key = tier_label.lower().strip()
+    mapping = {
+        "default": "Стандарт",
+        "none": "Минимум",
+        "minimal": "Минимум",
+        "low": "Лёгкая",
+        "medium": "Средняя",
+        "high": "Мощная",
+        "extra high": "Максимум",
+        "max": "Максимум",
+        "fast": "Быстрая",
+        "low fast": "Лёгкая · быстрая",
+        "medium fast": "Средняя · быстрая",
+        "high fast": "Мощная · быстрая",
+        "extra high fast": "Макс. · быстрая",
+        "max fast": "Макс. · быстрая",
+        "none fast": "Мин. · быстрая",
+        "thinking": "Thinking",
+        "thinking fast": "Thinking · быстрая",
+    }
+    if key in mapping:
+        return mapping[key]
+    for pattern, label in mapping.items():
+        if pattern in key:
+            return label
+    return tier_label.replace("Extra High", "Макс.").replace("Fast", "быстрая")
+
+
 def _title_word(word: str) -> str:
     mapping = {
         "xhigh": "Extra High",
@@ -121,7 +153,7 @@ def detect_family(model_id: str, label: str) -> tuple[str, str]:
     if model_id.startswith("claude-") or label.startswith("Claude "):
         return "claude", "Claude"
     if model_id.startswith("gpt-") or label.startswith("Codex") or label.startswith("GPT"):
-        return "gpt", "GPT"
+        return "gpt", "ChatGPT"
     if model_id.startswith("gemini-"):
         return "gemini", "Gemini"
     if model_id.startswith("muse-spark-"):

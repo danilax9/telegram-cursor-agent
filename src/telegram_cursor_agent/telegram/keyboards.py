@@ -79,11 +79,3 @@ def session_delete_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Projects", callback_data="menu:projects"),
-        InlineKeyboardButton(text="Status", callback_data="menu:status"),
-    ], [
-        InlineKeyboardButton(text="Help", callback_data="menu:help"),
-        InlineKeyboardButton(text="Cancel", callback_data="task:cancel"),
-    ]])

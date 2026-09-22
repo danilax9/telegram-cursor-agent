@@ -13,10 +13,16 @@ from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.agent.sessions import SessionService
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+from telegram_cursor_agent.telegram.session_live import (
+    REDIRECT_STATUS_TEXT,
+    edit_session_live_via_message,
+)
 from telegram_cursor_agent.services.image_attachments import PendingImageStore
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
 from telegram_cursor_agent.telegram.keyboards import confirmation_keyboard, mcp_setup_keyboard
+from telegram_cursor_agent.telegram.typing_indicator import send_typing
 
 router = Router()
 
@@ -52,12 +58,13 @@ async def handle_text_message(
     intent = parse_intent(message.text)
     image_attachments = None
     if intent.intent == IntentType.AGENT_PROMPT:
+        await send_typing(message)
         pending = PendingImageStore(redis_client)
         image_attachments = await pending.get_and_clear(user.id)
         if not image_attachments:
             image_attachments = None
 
-    action_service = ActionService(db, settings, runner, task_queue)
+    action_service = ActionService(db, settings, runner, task_queue, redis_client)
     result = await action_service.handle_text(
         user.id,
         message.text,
@@ -81,9 +88,21 @@ async def handle_text_message(
             await message.answer(text)
         return
 
+    if result.result_type == ActionResultType.REDIRECT_REQUESTED:
+        await send_typing(message)
+        agent_session = await SessionService(db, settings).get_active(user.id)
+        if agent_session is not None:
+            await edit_session_live_via_message(
+                redis_client,
+                message,
+                agent_session.id,
+                REDIRECT_STATUS_TEXT,
+                settings,
+            )
+        return
+
     if result.result_type == ActionResultType.TASK_QUEUED:
-        # Cursor's typing indicator and final response are the only UX for
-        # ordinary prompts; an enqueue acknowledgement is just noise.
+        await send_typing(message)
         return
 
     if result.result_type == ActionResultType.MCP_SETUP and result.confirmation_id:

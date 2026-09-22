@@ -39,6 +39,15 @@ class DeployService:
                 "SELF_REPO_ROOT": str(self._settings.self_repo_root),
                 "WORKER_SERVICE_NAME": self._settings.worker_service_name,
                 "BOT_COMPOSE_SERVICE": self._settings.bot_compose_service,
+                "UV_BIN": str(self._settings.uv_bin),
+                "PATH": os.pathsep.join(
+                    dict.fromkeys(
+                        [
+                            str(self._settings.uv_bin.parent),
+                            env.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+                        ]
+                    )
+                ),
             }
         )
         env.update(context_to_env(deploy_context))

@@ -6,7 +6,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from telegram_cursor_agent.core.logging import get_logger
 
 from telegram_cursor_agent.agent.parser import IntentType, ParsedIntent, parse_intent
 from telegram_cursor_agent.agent.prompts import HELP_TEXT
@@ -28,12 +31,19 @@ from telegram_cursor_agent.services.image_attachments import (
     build_prompt_with_images,
 )
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
+from telegram_cursor_agent.services.session_execution import (
+    SessionExecState,
+    SessionExecutionService,
+)
+
+logger = get_logger(__name__)
 
 
 class ActionResultType(StrEnum):
     TEXT = "text"
     CONFIRMATION_REQUIRED = "confirmation_required"
     TASK_QUEUED = "task_queued"
+    REDIRECT_REQUESTED = "redirect_requested"
     MCP_SETUP = "mcp_setup"
     ERROR = "error"
 
@@ -58,11 +68,13 @@ class ActionService:
         settings: Settings,
         runner: ProcessRunner,
         task_queue: TaskQueue,
+        redis: Redis | None = None,  # type: ignore[type-arg]
     ) -> None:
         self._db = db
         self._settings = settings
         self._runner = runner
         self._task_queue = task_queue
+        self._redis = redis
         self._sessions = SessionService(db, settings)
         self._projects = ProjectService(db, settings)
         self._git = GitService(settings, runner)
@@ -255,18 +267,13 @@ class ActionService:
                 "Чат Cursor ещё пуст. Сначала отправь хотя бы одно сообщение.",
             )
 
-        task = await self._tasks.create(
+        return await self._queue_agent_work(
             user_id=user_id,
-            task_type="agent_prompt",
-            payload=json.dumps({"prompt": command, "workspace": workspace}),
-            session_id=agent_session.id,
+            prompt=command,
+            workspace=workspace,
             project_id=project_id,
-        )
-        await self._task_queue.enqueue(str(task.id))
-        return ActionResult(
-            ActionResultType.TASK_QUEUED,
-            f"Запускаю {command}…",
-            task_id=task.id,
+            session_id=agent_session.id,
+            queued_message=f"Запускаю {command}…",
         )
 
     async def queue_deploy(
@@ -351,23 +358,106 @@ class ActionService:
         agent_session = await self._sessions.get_or_create_active(
             user_id, workspace, project_id
         )
+        return await self._queue_agent_work(
+            user_id=user_id,
+            prompt=prompt,
+            workspace=workspace,
+            project_id=project_id,
+            session_id=agent_session.id,
+        )
+
+    async def _queue_agent_work(
+        self,
+        *,
+        user_id: uuid.UUID,
+        prompt: str,
+        workspace: str,
+        project_id: uuid.UUID | None,
+        session_id: uuid.UUID,
+        queued_message: str = "Передала Cursor. Он ответит здесь, как закончит.",
+    ) -> ActionResult:
+        payload_dict = {
+            "prompt": prompt,
+            "workspace": workspace,
+            "agent_workspace": workspace,
+        }
+        payload_json = json.dumps(payload_dict, ensure_ascii=False)
+
+        session_exec = (
+            SessionExecutionService(self._redis)
+            if self._redis is not None
+            else None
+        )
+
+        running_tasks = await self._tasks.list_running_agent_for_session(session_id)
+        running_task_id: uuid.UUID | None = (
+            running_tasks[0].id if running_tasks else None
+        )
+        if running_task_id is None and session_exec is not None:
+            running_task_id = await session_exec.get_running_task_id(session_id)
+
+        if running_task_id is not None:
+            if session_exec is None:
+                return ActionResult(
+                    ActionResultType.ERROR,
+                    "Задача уже выполняется. Дождись ответа или отправь cancel.",
+                )
+            await session_exec.set_pending_redirect(session_id, payload_dict)
+            await session_exec.set_state(session_id, SessionExecState.INTERRUPTING)
+            await session_exec.publish_redirect(session_id)
+            await self._task_queue.publish_cancel(str(running_task_id))
+            logger.info(
+                "redirect_requested",
+                session_id=str(session_id),
+                task_id=str(running_task_id),
+                user_id=str(user_id),
+            )
+            return ActionResult(
+                ActionResultType.REDIRECT_REQUESTED,
+                "",
+                task_id=running_task_id,
+            )
+
+        pending = await self._tasks.list_pending_agent_for_session(session_id)
+        if pending:
+            primary = pending[0]
+            for duplicate in pending[1:]:
+                await self._tasks.mark_cancelled(duplicate.id)
+                logger.info(
+                    "redirect_coalesced_duplicate_pending",
+                    session_id=str(session_id),
+                    cancelled_task_id=str(duplicate.id),
+                )
+            await self._tasks.update_payload(primary.id, payload_json)
+            logger.info(
+                "redirect_coalesced_pending",
+                session_id=str(session_id),
+                task_id=str(primary.id),
+            )
+            return ActionResult(
+                ActionResultType.TASK_QUEUED,
+                "",
+                task_id=primary.id,
+            )
+
         task = await self._tasks.create(
             user_id=user_id,
             task_type="agent_prompt",
-            payload=json.dumps(
-                {
-                    "prompt": prompt,
-                    "workspace": workspace,
-                    "agent_workspace": workspace,
-                }
-            ),
-            session_id=agent_session.id,
+            payload=payload_json,
+            session_id=session_id,
             project_id=project_id,
         )
         await self._task_queue.enqueue(str(task.id))
+        logger.info(
+            "task_started",
+            session_id=str(session_id),
+            task_id=str(task.id),
+            user_id=str(user_id),
+            source="enqueue",
+        )
         return ActionResult(
             ActionResultType.TASK_QUEUED,
-            "Передала Cursor. Он ответит здесь, как закончит.",
+            queued_message,
             task_id=task.id,
         )
 

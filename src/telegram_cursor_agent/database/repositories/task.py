@@ -100,6 +100,38 @@ class TaskRepository:
         )
         return list(result.scalars().all())
 
+    async def list_running_agent_for_session(self, session_id: uuid.UUID) -> list[Task]:
+        result = await self._session.execute(
+            select(Task)
+            .where(
+                Task.session_id == session_id,
+                Task.task_type == "agent_prompt",
+                Task.status == "running",
+            )
+            .order_by(Task.started_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_pending_agent_for_session(self, session_id: uuid.UUID) -> list[Task]:
+        result = await self._session.execute(
+            select(Task)
+            .where(
+                Task.session_id == session_id,
+                Task.task_type == "agent_prompt",
+                Task.status == "pending",
+            )
+            .order_by(Task.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def update_payload(self, task_id: uuid.UUID, payload: str) -> Task | None:
+        task = await self.get_by_id(task_id)
+        if task is None:
+            return None
+        task.payload = payload
+        await self._session.flush()
+        return task
+
     async def update_process_pid(self, task_id: uuid.UUID, pid: int) -> Task | None:
         task = await self.get_by_id(task_id)
         if task is None:

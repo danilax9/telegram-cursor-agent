@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,7 +75,63 @@ class CursorAccountService:
         return CursorAccountsConfig(accounts=[default])
 
     def list_accounts(self) -> list[CursorAccount]:
-        return self.load_config().accounts
+        config = self.load_config()
+        normalized = [
+            self.ensure_account_auth_isolated(account) for account in config.accounts
+        ]
+        return sorted(normalized, key=lambda account: account.priority)
+
+    def isolated_auth_path(self, account_id: str) -> Path:
+        return (
+            self._settings.cursor_accounts_dir
+            / account_id
+            / ".config"
+            / "cursor"
+            / "auth.json"
+        )
+
+    def _uses_live_auth_file(self, auth_file: Path) -> bool:
+        try:
+            return (
+                auth_file.expanduser().resolve()
+                == self._settings.cursor_auth_file.expanduser().resolve()
+            )
+        except OSError:
+            return False
+
+    def ensure_account_auth_isolated(self, account: CursorAccount) -> CursorAccount:
+        """Keep a per-account auth copy; the live path is only the activation target."""
+        if not self._uses_live_auth_file(account.auth_file):
+            return account
+        isolated = self.isolated_auth_path(account.id)
+        live = self._settings.cursor_auth_file
+        if not isolated.is_file():
+            if not live.is_file():
+                raise CursorAccountError(
+                    f"Нет auth.json для `{account.id}` и нечего скопировать в "
+                    f"{isolated}."
+                )
+            isolated.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(live, isolated)
+        if account.auth_file.resolve() == isolated.resolve():
+            return account
+        updated = CursorAccount(
+            id=account.id,
+            label=account.label,
+            auth_file=isolated,
+            priority=account.priority,
+        )
+        config = self.load_config()
+        others = [item for item in config.accounts if item.id != account.id]
+        others.append(updated)
+        self._write_config(
+            CursorAccountsConfig(
+                accounts=sorted(others, key=lambda item: item.priority),
+                auto_rotate=config.auto_rotate,
+                usage_threshold_percent=config.usage_threshold_percent,
+            )
+        )
+        return updated
 
     async def get_active_account(self) -> CursorAccount:
         accounts = self.list_accounts()
@@ -86,29 +143,49 @@ class CursorAccountService:
         return accounts[0]
 
     async def set_active_account(self, account_id: str) -> CursorAccount:
-        account = self.get_account(account_id)
-        await self._set_active_account_id(account.id)
+        account = self.ensure_account_auth_isolated(self.get_account(account_id))
         self.activate_account_files(account)
+        await self._set_active_account_id(account.id)
         return account
 
     def get_account(self, account_id: str) -> CursorAccount:
-        for account in self.list_accounts():
+        config = self.load_config()
+        for account in config.accounts:
             if account.id == account_id:
-                return account
+                return self.ensure_account_auth_isolated(account)
         raise CursorAccountError(f"Unknown account: {account_id}")
 
+    def should_switch_on_worker(self) -> bool:
+        """True when only the host worker may update Cursor auth (split deploy)."""
+        if self._settings.self_deploy_enabled:
+            return True
+        return not self.can_activate_accounts_locally()
+
+    def can_activate_accounts_locally(self) -> bool:
+        """False in Docker bot where cursor auth.json is mounted read-only."""
+        target = self._settings.cursor_auth_file
+        parent = target.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        if target.is_file():
+            return os.access(target, os.W_OK)
+        return os.access(parent, os.W_OK)
+
     def activate_account_files(self, account: CursorAccount) -> None:
-        if not account.auth_file.is_file():
+        account = self.ensure_account_auth_isolated(account)
+        source = account.auth_file
+        if not source.is_file():
             raise CursorAccountError(
-                f"Auth file missing for `{account.id}`: {account.auth_file}"
+                f"Auth file missing for `{account.id}`: {source}"
             )
         target = self._settings.cursor_auth_file
-        if account.auth_file.resolve() == target.resolve():
-            return
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(account.auth_file, target)
+        shutil.copy2(source, target)
 
     async def activate_account(self, account: CursorAccount) -> None:
+        account = self.ensure_account_auth_isolated(account)
         self.activate_account_files(account)
         await self._set_active_account_id(account.id)
 

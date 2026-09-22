@@ -90,6 +90,7 @@ class CursorAccountLoginService:
                 ensure_ascii=False,
             ),
         )
+        await db.commit()
         await task_queue.enqueue(str(task.id))
         return f"Запускаю авторизацию для `{account_id}` на сервере…"
 
@@ -108,8 +109,36 @@ class CursorAccountLoginService:
             task_type="cursor_account_login_cancel",
             payload=json.dumps({"telegram_id": telegram_id}, ensure_ascii=False),
         )
+        await db.commit()
         await task_queue.enqueue(str(task.id))
         return "Отменяю авторизацию на сервере…"
+
+    async def queue_account_switch(
+        self,
+        db: AsyncSession,
+        task_queue: TaskQueue,
+        user_id: uuid.UUID,
+        telegram_id: int,
+        account_id: str,
+        *,
+        menu_message: dict[str, int | str] | None = None,
+    ) -> str:
+        self._accounts.get_account(account_id)
+        payload: dict[str, object] = {
+            "account_id": account_id,
+            "telegram_id": telegram_id,
+        }
+        if menu_message is not None:
+            payload["menu_message"] = menu_message
+        tasks = TaskRepository(db)
+        task = await tasks.create(
+            user_id=user_id,
+            task_type="cursor_account_switch",
+            payload=json.dumps(payload, ensure_ascii=False),
+        )
+        await db.commit()
+        await task_queue.enqueue(str(task.id))
+        return f"Переключаю активный аккаунт на `{account_id}` на сервере…"
 
     async def start_login(self, telegram_id: int, account_id: str) -> LoginStartResult:
         self.validate_account_id(account_id)

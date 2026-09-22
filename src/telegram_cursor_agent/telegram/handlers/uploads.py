@@ -12,7 +12,13 @@ from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.agent.sessions import SessionService
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+from telegram_cursor_agent.telegram.session_live import (
+    REDIRECT_STATUS_TEXT,
+    edit_session_live_via_message,
+)
+from telegram_cursor_agent.telegram.typing_indicator import send_typing
 from telegram_cursor_agent.services.image_attachments import PendingImageStore, StoredImage
 from telegram_cursor_agent.services.uploads import UploadService
 from telegram_cursor_agent.telegram.media_groups import schedule_media_group
@@ -62,8 +68,28 @@ def _stored_image(upload: Upload) -> StoredImage:
     )
 
 
-async def _reply_action_result(message: Message, result) -> None:
+async def _reply_action_result(
+    message: Message,
+    result,
+    db: AsyncSession,
+    settings: Settings,
+    redis_client: Redis,  # type: ignore[type-arg]
+    user_id,
+) -> None:
+    if result.result_type == ActionResultType.REDIRECT_REQUESTED:
+        await send_typing(message)
+        agent_session = await SessionService(db, settings).get_active(user_id)
+        if agent_session is not None:
+            await edit_session_live_via_message(
+                redis_client,
+                message,
+                agent_session.id,
+                REDIRECT_STATUS_TEXT,
+                settings,
+            )
+        return
     if result.result_type == ActionResultType.TASK_QUEUED:
+        await send_typing(message)
         return
     for chunk in split_telegram_message(result.message):
         await message.answer(chunk)
@@ -75,6 +101,7 @@ async def _queue_images_with_caption(
     settings: Settings,
     task_queue: TaskQueue,
     runner: ProcessRunner,
+    redis_client: Redis,  # type: ignore[type-arg]
     user,
     uploads: list[Upload],
     caption: str | None,
@@ -82,9 +109,11 @@ async def _queue_images_with_caption(
     project_service = ProjectService(db, settings)
     workspace = await project_service.resolve_workspace(user)
     agent_workspace = project_service.resolve_agent_workspace()
-    action_service = ActionService(db, settings, runner, task_queue)
+    action_service = ActionService(db, settings, runner, task_queue, redis_client)
     images = [_stored_image(upload) for upload in uploads]
     text = caption or ""
+    if text.strip():
+        await send_typing(message)
     result = await action_service.handle_text(
         user.id,
         text,
@@ -93,7 +122,9 @@ async def _queue_images_with_caption(
         agent_workspace=agent_workspace,
         image_attachments=images,
     )
-    await _reply_action_result(message, result)
+    await _reply_action_result(
+        message, result, db, settings, redis_client, user.id
+    )
 
 
 async def _save_pending_images(
@@ -181,7 +212,15 @@ async def _process_image_messages(
     first = messages[0]
     if caption:
         await _queue_images_with_caption(
-            first, db, settings, task_queue, runner, user, uploads, caption
+            first,
+            db,
+            settings,
+            task_queue,
+            runner,
+            redis_client,
+            user,
+            uploads,
+            caption,
         )
     else:
         await _save_pending_images(first, redis_client, user.id, uploads)

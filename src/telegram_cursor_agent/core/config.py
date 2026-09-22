@@ -193,6 +193,10 @@ class Settings(BaseSettings):
         default=Path("/root/telegram-cursor-agent/scripts/deploy-self.sh"),
         validation_alias=AliasChoices("DEPLOY_SCRIPT"),
     )
+    uv_bin: Path = Field(
+        default=Path("/root/.hermes/bin/uv"),
+        validation_alias=AliasChoices("UV_BIN"),
+    )
     worker_service_name: str = Field(
         default="telegram-cursor-agent-worker",
         validation_alias=AliasChoices("WORKER_SERVICE_NAME"),
@@ -238,7 +242,9 @@ class Settings(BaseSettings):
             return value.lower() in ("1", "true", "yes", "on")
         return value
 
-    @field_validator("self_repo_root", "deploy_script", "cursor_mcp_config_path", mode="before")
+    @field_validator(
+        "self_repo_root", "deploy_script", "uv_bin", "cursor_mcp_config_path", mode="before"
+    )
     @classmethod
     def parse_self_deploy_paths(cls, value: object) -> Path:
         return _parse_single_path(value)

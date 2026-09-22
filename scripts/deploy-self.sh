@@ -5,8 +5,31 @@ set -euo pipefail
 REPO_ROOT="${SELF_REPO_ROOT:-/root/telegram-cursor-agent}"
 WORKER_SERVICE="${WORKER_SERVICE_NAME:-telegram-cursor-agent-worker}"
 BOT_SERVICE="${BOT_COMPOSE_SERVICE:-bot}"
-UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "${HOME}/.local/bin/uv")}"
 LOG_FILE="${DEPLOY_LOG_FILE:-/tmp/tca-deploy.log}"
+
+resolve_uv_bin() {
+  if [[ -n "${UV_BIN:-}" && -x "${UV_BIN}" ]]; then
+    return 0
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+    return 0
+  fi
+  for candidate in \
+    /root/.hermes/bin/uv \
+    "${HOME}/.local/bin/uv" \
+    /usr/local/bin/uv; do
+    if [[ -x "$candidate" ]]; then
+      UV_BIN="$candidate"
+      return 0
+    fi
+  done
+  echo "[deploy] uv not found (set UV_BIN to the uv binary path)" >&2
+  return 1
+}
+
+resolve_uv_bin
+export UV_BIN
 
 log() {
   echo "[$(date -Iseconds)] [deploy] $*" | tee -a "$LOG_FILE"
@@ -26,11 +49,11 @@ log "Running migrations..."
 "$UV_BIN" run alembic upgrade head
 
 if command -v docker >/dev/null 2>&1 && [[ -f docker-compose.yml ]]; then
-  # src/ is bind-mounted into the bot container — rebuild only when asked.
-  compose_args=(up -d)
+  # src/ is bind-mounted — Python loads code at process start, so recreate the bot.
+  compose_args=(up -d --force-recreate --no-deps)
   if [[ "${DEPLOY_FORCE_BUILD:-}" == "1" ]]; then
     log "Building and recreating bot container ($BOT_SERVICE)..."
-    compose_args=(up -d --build)
+    compose_args=(up -d --build --force-recreate --no-deps)
   else
     log "Recreating bot container without image rebuild ($BOT_SERVICE)..."
   fi

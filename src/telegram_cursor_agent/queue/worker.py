@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from redis.asyncio import Redis
 
 from telegram_cursor_agent.agent.adapter import AgentResult, CursorAgentAdapter
+from telegram_cursor_agent.agent.prompts import build_redirect_prompt
 from telegram_cursor_agent.core.config import get_settings
 from telegram_cursor_agent.core.logging import get_logger, setup_logging
 from telegram_cursor_agent.database.models.task import Task
@@ -29,10 +30,26 @@ from telegram_cursor_agent.services.cursor_account_login import (
     CURSOR_LOGIN_TASK_NOTIFIED,
     CursorAccountLoginService,
 )
-from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
+from telegram_cursor_agent.services.cursor_accounts import (
+    CursorAccountError,
+    CursorAccountService,
+)
 from telegram_cursor_agent.services.cursor_models import (
+    REFRESH_MODELS_MENU_UPDATED,
+    load_models,
     parse_models_output,
     write_models_catalog,
+)
+from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
+from telegram_cursor_agent.telegram.menu_navigation import (
+    build_accounts_menu_view,
+    build_cursor_submenu_text,
+)
+from telegram_cursor_agent.telegram.model_keyboards import (
+    ModelPickerState,
+    model_picker_keyboard,
+    model_picker_text,
+    picker_state_from_payload,
 )
 from telegram_cursor_agent.services.deploy import DeployService
 from telegram_cursor_agent.services.deploy_recovery import DeployRecoveryService
@@ -48,7 +65,24 @@ from telegram_cursor_agent.services.deploy_resume import (
     write_marker,
 )
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
-from telegram_cursor_agent.telegram.live_message import LiveMessageNotifier
+from telegram_cursor_agent.services.outbound_attachments import (
+    OutboundAttachment,
+    extract_outbound_attachments,
+    format_skipped_attachments,
+)
+from telegram_cursor_agent.services.session_execution import (
+    SessionExecState,
+    SessionExecutionService,
+)
+from telegram_cursor_agent.telegram.live_message import (
+    LiveMessageNotifier,
+    THINKING_STATUS_TEXT,
+)
+from telegram_cursor_agent.telegram.session_live import (
+    CONTINUE_STATUS_TEXT,
+    REDIRECT_STATUS_TEXT,
+    persist_live_message_ref,
+)
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 logger = get_logger(__name__)
@@ -71,16 +105,19 @@ class TaskWorker:
         self._session_factory = create_session_factory(self._engine)
         self._runner = ProcessRunner(self._settings)
         self._redis: Redis | None = None  # type: ignore[type-arg]
+        self._redis_pubsub: Redis | None = None  # type: ignore[type-arg]
         self._queue: TaskQueue | None = None
         self._notifier = TelegramNotifier(self._settings)
         self._active_task_pids: dict[str, int] = {}
+        self._session_task_map: dict[str, str] = {}
         self._current_task_id: str | None = None
         self._last_watchdog_at = 0.0
 
     async def start(self) -> None:
         setup_logging(self._settings)
         self._redis = await create_redis(self._settings)
-        self._queue = TaskQueue(self._redis)
+        self._redis_pubsub = await create_redis(self._settings)
+        self._queue = TaskQueue(self._redis, pubsub_redis=self._redis_pubsub)
         recovery = DeployRecoveryService(
             self._settings,
             self._session_factory,
@@ -94,7 +131,12 @@ class TaskWorker:
             # A recovery failure must never stop the worker from serving new tasks.
             logger.exception("startup_recovery_failed")
         logger.info("worker_started")
+        try:
+            CursorAccountService(self._settings, self._redis).list_accounts()
+        except Exception:
+            logger.exception("accounts_auth_migration_failed")
         cancel_listener = asyncio.create_task(self._supervise_cancellations())
+        redirect_listener = asyncio.create_task(self._supervise_session_redirects())
 
         failures = 0
         try:
@@ -120,7 +162,8 @@ class TaskWorker:
                     )
         finally:
             cancel_listener.cancel()
-            await asyncio.gather(cancel_listener, return_exceptions=True)
+            redirect_listener.cancel()
+            await asyncio.gather(cancel_listener, redirect_listener, return_exceptions=True)
             await self._shutdown()
         logger.info("worker_restarting_after_deploy")
 
@@ -132,8 +175,9 @@ class TaskWorker:
                 logger.warning("worker_shutdown_cleanup_failed", exc_info=True)
 
     async def _close_redis(self) -> None:
-        if self._redis is not None:
-            await self._redis.aclose()  # type: ignore[attr-defined]
+        for client in (self._redis, self._redis_pubsub):
+            if client is not None:
+                await client.aclose()  # type: ignore[attr-defined]
 
     async def _should_restart_after_deploy(self) -> bool:
         if self._redis is None:
@@ -182,6 +226,75 @@ class TaskWorker:
                 if task and task.process_pid:
                     await self._runner.cancel_pid(task.process_pid)
 
+    async def _supervise_session_redirects(self) -> None:
+        while True:
+            try:
+                await self._listen_session_redirects()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("redirect_listener_error")
+            await asyncio.sleep(1)
+
+    async def _listen_session_redirects(self) -> None:
+        if self._queue is None:
+            return
+        async for session_id in self._queue.listen_session_redirect():
+            await self._interrupt_session_for_redirect(session_id)
+
+    async def _interrupt_session_for_redirect(self, session_id: str) -> None:
+        task_id = self._session_task_map.get(session_id)
+        pid = self._active_task_pids.get(task_id) if task_id else None
+        if pid is None and task_id is not None:
+            try:
+                async with self._session_factory() as db:
+                    task = await TaskRepository(db).get_by_id(uuid.UUID(task_id))
+                    if task is not None and task.process_pid:
+                        pid = task.process_pid
+            except Exception:
+                logger.exception(
+                    "redirect_process_pid_lookup_failed",
+                    session_id=session_id,
+                    task_id=task_id,
+                )
+        logger.info(
+            "process_interrupting",
+            session_id=session_id,
+            task_id=task_id,
+            pid=pid,
+        )
+        if pid is None:
+            logger.warning(
+                "redirect_no_process",
+                session_id=session_id,
+                task_id=task_id,
+            )
+            return
+        interrupted = await self._runner.cancel_pid(pid)
+        if interrupted:
+            logger.info(
+                "process_interrupted",
+                session_id=session_id,
+                task_id=task_id,
+            )
+            return
+        logger.warning(
+            "redirect_failed",
+            session_id=session_id,
+            task_id=task_id,
+            reason="cancel_pid_failed",
+        )
+        telegram_id: int | None = None
+        if task_id is not None:
+            try:
+                async with self._session_factory() as db:
+                    task = await TaskRepository(db).get_by_id(uuid.UUID(task_id))
+                    if task is not None:
+                        telegram_id = await self._lookup_telegram_id(task.user_id)
+            except Exception:
+                logger.exception("redirect_failed_lookup_user", task_id=task_id)
+        await self._notify_safe(telegram_id, "⚠️ Не удалось прервать текущую задачу")
+
     async def _recover_pending_tasks(self) -> None:
         async with self._session_factory() as db:
             pending = await TaskRepository(db).list_pending(limit=10)
@@ -195,6 +308,14 @@ class TaskWorker:
             return
         task, telegram_id = claimed
         self._current_task_id = task_id_str
+        if task.session_id is not None and task.task_type == "agent_prompt":
+            self._session_task_map[str(task.session_id)] = task_id_str
+            if self._redis is not None:
+                session_exec = SessionExecutionService(self._redis)
+                await session_exec.register_running_task(task.session_id, task.id)
+                await session_exec.set_state(
+                    task.session_id, SessionExecState.RUNNING
+                )
         try:
             await self._run_claimed_task(task, telegram_id)
         except Exception as exc:
@@ -202,6 +323,8 @@ class TaskWorker:
             logger.exception("task_failed", task_id=task_id_str)
             await self._fail_task(task_id, telegram_id, exc)
         finally:
+            if task.session_id is not None:
+                self._session_task_map.pop(str(task.session_id), None)
             self._current_task_id = None
             self._active_task_pids.pop(task_id_str, None)
 
@@ -229,12 +352,16 @@ class TaskWorker:
         skip_typing = task.task_type in {
             "cursor_account_login",
             "cursor_account_login_cancel",
+            "cursor_account_switch",
         }
         typing_task = (
             asyncio.create_task(self._notifier.keep_typing(telegram_id))
             if telegram_id is not None and not skip_typing
             else None
         )
+        if typing_task is not None:
+            await self._notifier.send_typing_once(telegram_id)
+        live: LiveMessageNotifier | None = None
 
         async def stop_typing() -> None:
             nonlocal typing_task
@@ -256,20 +383,51 @@ class TaskWorker:
                     status=SESSION_ACTIVE_STATUS,
                 )
 
-            live: LiveMessageNotifier | None = None
             if (
                 telegram_id is not None
                 and task.task_type == "agent_prompt"
                 and not silent_recovery
             ):
                 live = LiveMessageNotifier(self._notifier, self._settings, telegram_id)
+                await live.update_status(THINKING_STATUS_TEXT)
+
+            live_ref_persisted = False
+
+            async def _maybe_persist_live_ref() -> None:
+                nonlocal live_ref_persisted
+                if (
+                    live_ref_persisted
+                    or live is None
+                    or live.message_id is None
+                    or task.session_id is None
+                    or self._redis is None
+                ):
+                    return
+                await persist_live_message_ref(
+                    self._redis,
+                    task.session_id,
+                    telegram_id,
+                    live.message_id,
+                )
+                live_ref_persisted = True
 
             async def on_progress(text: str) -> None:
                 if live is not None:
                     await live.update(text)
+                    await _maybe_persist_live_ref()
+
+            async def on_status(text: str) -> None:
+                if live is not None:
+                    await live.update_status(text)
+                    await _maybe_persist_live_ref()
 
             try:
-                result = await self._execute(task, on_progress if live is not None else None)
+                result = await self._execute(
+                    task,
+                    on_progress if live is not None else None,
+                    telegram_id=telegram_id,
+                    on_status=on_status if live is not None else None,
+                )
             except AgentTimeoutError as exc:
                 timeout_error = str(exc)
                 timeout_message = self._timeout_message(exc)
@@ -293,7 +451,15 @@ class TaskWorker:
                 await self._notify_safe(telegram_id, "Задача отменена.")
                 return
 
-            user_message = DEPLOY_SUCCESS_MESSAGE if task.task_type == "deploy" else result
+            attachments: list[OutboundAttachment] = []
+            if task.task_type == "deploy":
+                user_message = DEPLOY_SUCCESS_MESSAGE
+            else:
+                parsed = extract_outbound_attachments(result, self._settings)
+                user_message = parsed.text + format_skipped_attachments(parsed.skipped)
+                attachments = parsed.attachments
+                if not user_message.strip() and attachments:
+                    user_message = "📎 Файлы во вложении."
             # Persist before delivering: a Telegram outage must not discard the result.
             await self._persist_status(
                 task_id, lambda repo: repo.mark_completed(task_id, user_message)
@@ -303,8 +469,11 @@ class TaskWorker:
                 and not silent_recovery
                 and task.task_type != "cursor_account_login_cancel"
                 and result != CURSOR_LOGIN_TASK_NOTIFIED
+                and result != REFRESH_MODELS_MENU_UPDATED
             ):
-                await self._deliver_result(live, telegram_id, user_message)
+                await self._deliver_result(
+                    live, telegram_id, user_message, attachments=attachments
+                )
         finally:
             await stop_typing()
 
@@ -367,16 +536,44 @@ class TaskWorker:
             logger.exception("notify_failed", telegram_id=telegram_id)
 
     async def _deliver_result(
-        self, live: LiveMessageNotifier | None, telegram_id: int, text: str
+        self,
+        live: LiveMessageNotifier | None,
+        telegram_id: int,
+        text: str,
+        *,
+        attachments: list[OutboundAttachment] | None = None,
     ) -> None:
+        files = attachments or []
         if live is not None and live.message_id is not None:
             try:
                 await live.finalize(text)
+                if files:
+                    await self._send_attachments_safe(telegram_id, files)
                 return
             except Exception:
                 # Editing can fail (message deleted, too long) — fall back to a new message.
                 logger.warning("live_finalize_failed", telegram_id=telegram_id)
         await self._notify_safe(telegram_id, text)
+        if files:
+            await self._send_attachments_safe(telegram_id, files)
+
+    async def _send_attachments_safe(
+        self, telegram_id: int, attachments: list[OutboundAttachment]
+    ) -> None:
+        try:
+            errors = await self._notifier.send_attachments(telegram_id, attachments)
+        except Exception:
+            logger.exception("send_attachments_failed", telegram_id=telegram_id)
+            await self._notify_safe(
+                telegram_id,
+                "⚠️ Не удалось отправить прикреплённые файлы — см. логи worker.",
+            )
+            return
+        if errors:
+            await self._notify_safe(
+                telegram_id,
+                "⚠️ Часть файлов не отправилась:\n" + "\n".join(errors),
+            )
 
     async def _watchdog_stuck_tasks(self) -> None:
         """Fail tasks abandoned by a worker that died before recovery could run."""
@@ -421,13 +618,21 @@ class TaskWorker:
         return user.telegram_id if user is not None else None
 
     async def _execute(
-        self, task: Task, on_progress: Callable[[str], Awaitable[None]] | None = None
+        self,
+        task: Task,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+        telegram_id: int | None = None,
+        on_status: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         payload = json.loads(task.payload or "{}")
         task_id_str = str(task.id)
 
         async def on_process_start(pid: int) -> None:
             self._active_task_pids[task_id_str] = pid
+            if task.session_id is not None and self._redis is not None:
+                await SessionExecutionService(self._redis).register_running_task(
+                    task.session_id, task.id
+                )
             async with self._session_factory() as db:
                 await TaskRepository(db).update_process_pid(task.id, pid)
                 await db.commit()
@@ -468,6 +673,42 @@ class TaskWorker:
             telegram_id = int(payload.get("telegram_id", 0))
             return await login.cancel_login(telegram_id)
 
+        if task.task_type == "cursor_account_switch":
+            accounts = CursorAccountService(self._settings, self._redis)
+            account_id = str(payload.get("account_id", ""))
+            telegram_id = int(payload.get("telegram_id", 0))
+            try:
+                account = await accounts.set_active_account(account_id)
+            except CursorAccountError as exc:
+                await self._notify_safe(telegram_id, str(exc))
+                raise
+            menu_raw = payload.get("menu_message")
+            if isinstance(menu_raw, dict) and telegram_id:
+                chat_id = int(menu_raw["chat_id"])
+                message_id = int(menu_raw["message_id"])
+                try:
+                    text, markup = await build_accounts_menu_view(
+                        self._settings, self._redis
+                    )
+                    await self._notifier.edit_live_message(
+                        chat_id,
+                        message_id,
+                        text,
+                        reply_markup=markup,
+                    )
+                except Exception:
+                    logger.exception("account_switch_menu_edit_failed")
+                    await self._notify_safe(
+                        telegram_id,
+                        f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)",
+                    )
+            else:
+                await self._notify_safe(
+                    telegram_id,
+                    f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)",
+                )
+            return CURSOR_LOGIN_TASK_NOTIFIED
+
         if task.task_type == "refresh_models":
             result = await self._runner.run(
                 [self._settings.cursor_agent_bin, "models"],
@@ -481,7 +722,39 @@ class TaskWorker:
             if not models:
                 raise RuntimeError("cursor-agent models returned no entries")
             write_models_catalog(self._settings, models)
-            return f"Каталог моделей обновлён: {len(models)} шт. Открой /model заново."
+            menu_raw = payload.get("menu_message")
+            if isinstance(menu_raw, dict):
+                chat_id = int(menu_raw["chat_id"])
+                message_id = int(menu_raw["message_id"])
+                view = str(menu_raw.get("view", "picker"))
+                try:
+                    if view == "picker":
+                        state = picker_state_from_payload(menu_raw)
+                        if state is None:
+                            state = ModelPickerState(menu=True)
+                        catalog_models = load_models(self._settings)
+                        text = model_picker_text(
+                            catalog_models, state, self._settings
+                        )
+                        markup = model_picker_keyboard(
+                            catalog_models, state, self._settings
+                        )
+                    else:
+                        text = (
+                            f"{build_cursor_submenu_text(self._settings)}\n\n"
+                            f"✅ Список обновлён ({len(models)} моделей)."
+                        )
+                        markup = cursor_submenu_keyboard()
+                    await self._notifier.edit_live_message(
+                        chat_id,
+                        message_id,
+                        text,
+                        reply_markup=markup,
+                    )
+                except Exception:
+                    logger.exception("refresh_models_menu_edit_failed")
+                return REFRESH_MODELS_MENU_UPDATED
+            return f"Каталог моделей обновлён: {len(models)} шт."
 
         if task.task_type == "mcp_finalize":
             server_id = str(payload.get("server_id", ""))
@@ -497,7 +770,9 @@ class TaskWorker:
             return await self._run_agent_prompt(
                 task,
                 payload,
+                telegram_id=telegram_id,
                 on_progress=on_progress,
+                on_status=on_status,
                 on_process_start=on_process_start,
             )
 
@@ -507,7 +782,9 @@ class TaskWorker:
         self,
         task: Task,
         payload: dict[str, object],
+        telegram_id: int | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_status: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
     ) -> str:
         accounts = CursorAccountService(self._settings, self._redis)
@@ -525,66 +802,189 @@ class TaskWorker:
         )
         prompt = str(payload.get("prompt", ""))
         resume_chat_id = None
-        if task.session_id:
+        session_id = task.session_id
+        session_exec = (
+            SessionExecutionService(self._redis)
+            if self._redis is not None and session_id is not None
+            else None
+        )
+
+        if session_id:
             async with self._session_factory() as db:
                 sessions = SessionRepository(db)
-                agent_session = await sessions.get_by_id(task.session_id)
+                agent_session = await sessions.get_by_id(session_id)
                 if agent_session and agent_session.cursor_chat_id:
                     resume_chat_id = agent_session.cursor_chat_id
 
-        active = await accounts.get_active_account()
-        await accounts.activate_account(active)
-        agent_result = await self._execute_agent_prompt(
-            adapter,
-            workspace,
-            prompt,
-            resume_chat_id,
-            accounts.account_env(active),
-            on_progress=on_progress,
-            on_process_start=on_process_start,
-        )
+        redirect_iteration = 0
+        output = "(no output)"
 
-        failure = classify_agent_result(
-            AgentRunOutcome(
-                output=agent_result.output,
-                stderr=agent_result.stderr,
-                returncode=agent_result.returncode,
-                cancelled=agent_result.cancelled,
-            )
-        )
-        if is_account_switchable_failure(failure):
-            next_account = await accounts.rotate_after_failure(active.id, failure.value)
-            if next_account is not None:
-                switch_notice = (
-                    f"Лимит или сессия на `{active.id}` — переключилась на "
-                    f"`{next_account.id}` ({next_account.label}).\n\n"
-                )
-                await accounts.activate_account(next_account)
+        try:
+            while True:
+                if session_exec is not None and session_id is not None:
+                    await session_exec.set_state(session_id, SessionExecState.RUNNING)
+                if redirect_iteration == 0:
+                    logger.info(
+                        "task_started",
+                        session_id=str(session_id),
+                        task_id=str(task.id),
+                    )
+                else:
+                    if on_status is not None:
+                        await on_status(CONTINUE_STATUS_TEXT)
+                    logger.info(
+                        "redirect_started",
+                        session_id=str(session_id),
+                        task_id=str(task.id),
+                        iteration=redirect_iteration,
+                    )
+
+                active = await accounts.get_active_account()
+                await accounts.activate_account(active)
                 agent_result = await self._execute_agent_prompt(
                     adapter,
                     workspace,
                     prompt,
-                    None,
-                    accounts.account_env(next_account),
+                    resume_chat_id,
+                    accounts.account_env(active),
+                    task=task,
                     on_progress=on_progress,
+                    on_status=on_status,
                     on_process_start=on_process_start,
                 )
 
-        if agent_result.cursor_chat_id and task.session_id:
-            # Persist first: a timed-out or cancelled session must stay resumable.
-            async with self._session_factory() as db:
-                sessions = SessionRepository(db)
-                await sessions.update_cursor_chat_id(
-                    task.session_id, agent_result.cursor_chat_id
+                failure = classify_agent_result(
+                    AgentRunOutcome(
+                        output=agent_result.output,
+                        stderr=agent_result.stderr,
+                        returncode=agent_result.returncode,
+                        cancelled=agent_result.cancelled,
+                    )
                 )
-                await db.commit()
+                if is_account_switchable_failure(failure):
+                    next_account = await accounts.rotate_after_failure(
+                        active.id, failure.value
+                    )
+                    if next_account is not None:
+                        switch_notice = (
+                            f"Лимит или сессия на `{active.id}` — переключилась на "
+                            f"`{next_account.id}` ({next_account.label}).\n\n"
+                        )
+                        await accounts.activate_account(next_account)
+                        agent_result = await self._execute_agent_prompt(
+                            adapter,
+                            workspace,
+                            prompt,
+                            None,
+                            accounts.account_env(next_account),
+                            task=task,
+                            on_progress=on_progress,
+                            on_status=on_status,
+                            on_process_start=on_process_start,
+                        )
 
-        if agent_result.cancelled:
-            return "Task cancelled."
-        if agent_result.timed_out:
-            raise AgentTimeoutError(self._settings.task_timeout, agent_result.output)
+                if agent_result.cursor_chat_id and session_id:
+                    async with self._session_factory() as db:
+                        sessions = SessionRepository(db)
+                        await sessions.update_cursor_chat_id(
+                            session_id, agent_result.cursor_chat_id
+                        )
+                        await db.commit()
+                    resume_chat_id = agent_result.cursor_chat_id
 
-        output = agent_result.output or "(no output)"
+                pending = (
+                    await session_exec.consume_pending_redirect(session_id)
+                    if session_exec is not None and session_id is not None
+                    else None
+                )
+                if pending:
+                    redirect_iteration += 1
+                    prompt = build_redirect_prompt(str(pending.get("prompt", "")))
+                    workspace = self._resolve_workspace(
+                        pending.get("agent_workspace")
+                        or pending.get("workspace")
+                        or workspace
+                    )
+                    if session_exec is not None and session_id is not None:
+                        await session_exec.set_state(
+                            session_id, SessionExecState.REDIRECTING
+                        )
+                    logger.info(
+                        "redirect_completed",
+                        session_id=str(session_id),
+                        task_id=str(task.id),
+                    )
+                    continue
+
+                if session_exec is not None and session_id is not None:
+                    pending_late = await session_exec.consume_pending_redirect(
+                        session_id
+                    )
+                    if pending_late:
+                        redirect_iteration += 1
+                        prompt = build_redirect_prompt(
+                            str(pending_late.get("prompt", ""))
+                        )
+                        workspace = self._resolve_workspace(
+                            pending_late.get("agent_workspace")
+                            or pending_late.get("workspace")
+                            or workspace
+                        )
+                        await session_exec.set_state(
+                            session_id, SessionExecState.REDIRECTING
+                        )
+                        logger.info(
+                            "redirect_completed",
+                            session_id=str(session_id),
+                            task_id=str(task.id),
+                            source="late",
+                        )
+                        continue
+
+                if agent_result.cancelled:
+                    pending_on_cancel = (
+                        await session_exec.consume_pending_redirect(session_id)
+                        if session_exec is not None and session_id is not None
+                        else None
+                    )
+                    if pending_on_cancel:
+                        redirect_iteration += 1
+                        prompt = build_redirect_prompt(
+                            str(pending_on_cancel.get("prompt", ""))
+                        )
+                        workspace = self._resolve_workspace(
+                            pending_on_cancel.get("agent_workspace")
+                            or pending_on_cancel.get("workspace")
+                            or workspace
+                        )
+                        await session_exec.set_state(
+                            session_id, SessionExecState.REDIRECTING
+                        )
+                        logger.info(
+                            "redirect_completed",
+                            session_id=str(session_id),
+                            task_id=str(task.id),
+                            source="cancel",
+                        )
+                        continue
+                    return "Task cancelled."
+                if agent_result.timed_out:
+                    raise AgentTimeoutError(
+                        self._settings.task_timeout, agent_result.output
+                    )
+
+                output = agent_result.output or "(no output)"
+                break
+        finally:
+            if session_exec is not None and session_id is not None:
+                await session_exec.set_state(session_id, SessionExecState.IDLE)
+                await session_exec.clear_running_task(session_id)
+
+        logger.info(
+            "task_finished",
+            session_id=str(session_id),
+            task_id=str(task.id),
+        )
         if switch_notice:
             output = switch_notice + output
         return output
@@ -596,17 +996,101 @@ class TaskWorker:
         prompt: str,
         resume_chat_id: str | None,
         process_env: dict[str, str],
+        task: Task | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_status: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
     ) -> AgentResult:
-        return await adapter.run_prompt(
-            workspace,
-            prompt,
-            resume_chat_id,
-            on_progress=on_progress,
-            on_process_start=on_process_start,
-            process_env=process_env,
-        )
+        session_id = task.session_id if task is not None else None
+        task_id_str = str(task.id) if task is not None else None
+        if self._redis is None or session_id is None or task is None:
+            return await adapter.run_prompt(
+                workspace,
+                prompt,
+                resume_chat_id,
+                on_progress=on_progress,
+                on_process_start=on_process_start,
+                process_env=process_env,
+            )
+
+        session_exec = SessionExecutionService(self._redis)
+        poll_stop = asyncio.Event()
+        redirect_status_sent = False
+
+        async def poll_redirect() -> None:
+            nonlocal redirect_status_sent
+            while not poll_stop.is_set():
+                try:
+                    await asyncio.wait_for(poll_stop.wait(), timeout=0.25)
+                    return
+                except TimeoutError:
+                    pass
+                pending = await session_exec.peek_pending_redirect(session_id)
+                if pending is None:
+                    redirect_status_sent = False
+                    continue
+                if on_status is not None and not redirect_status_sent:
+                    await on_status(REDIRECT_STATUS_TEXT)
+                    redirect_status_sent = True
+                logger.info(
+                    "redirect_requested",
+                    session_id=str(session_id),
+                    task_id=task_id_str,
+                    source="poll",
+                )
+                pid = (
+                    self._active_task_pids.get(task_id_str)
+                    if task_id_str is not None
+                    else None
+                )
+                if pid is None:
+                    async with self._session_factory() as db:
+                        stored = await TaskRepository(db).get_by_id(task.id)
+                        if stored is not None and stored.process_pid:
+                            pid = stored.process_pid
+                if pid is None:
+                    logger.warning(
+                        "redirect_no_process",
+                        session_id=str(session_id),
+                        task_id=task_id_str,
+                    )
+                    continue
+                logger.info(
+                    "process_interrupting",
+                    session_id=str(session_id),
+                    task_id=task_id_str,
+                    pid=pid,
+                    source="poll",
+                )
+                if await self._runner.cancel_pid(pid):
+                    logger.info(
+                        "process_interrupted",
+                        session_id=str(session_id),
+                        task_id=task_id_str,
+                        source="poll",
+                    )
+                else:
+                    logger.warning(
+                        "redirect_failed",
+                        session_id=str(session_id),
+                        task_id=task_id_str,
+                        reason="cancel_pid_failed",
+                    )
+
+        poll_task = asyncio.create_task(poll_redirect())
+        try:
+            return await adapter.run_prompt(
+                workspace,
+                prompt,
+                resume_chat_id,
+                on_progress=on_progress,
+                on_process_start=on_process_start,
+                process_env=process_env,
+            )
+        finally:
+            poll_stop.set()
+            poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
 
     async def _build_deploy_context(self, task: Task) -> DeployContext:
         async with self._session_factory() as db:

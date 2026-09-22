@@ -5,6 +5,7 @@ from uuid import UUID
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.agent.session_format import (
@@ -20,9 +21,17 @@ from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+from telegram_cursor_agent.telegram.session_live import (
+    REDIRECT_STATUS_TEXT,
+    edit_session_live_via_message,
+)
 from telegram_cursor_agent.telegram.keyboards import (
     session_delete_keyboard,
     session_resume_keyboard,
+)
+from telegram_cursor_agent.telegram.menu_screens import (
+    menu_back_keyboard,
+    prepare_menu_text,
 )
 
 router = Router()
@@ -51,6 +60,7 @@ async def _run_cursor_slash_command(
     telegram_user_id: int,
     task_queue: TaskQueue,
     runner: ProcessRunner,
+    redis_client: Redis,  # type: ignore[type-arg]
 ) -> None:
     user = await _get_user(db, telegram_user_id)
     if user is None:
@@ -59,13 +69,25 @@ async def _run_cursor_slash_command(
 
     project_service = ProjectService(db, settings)
     workspace = await project_service.resolve_workspace(user)
-    action_service = ActionService(db, settings, runner, task_queue)
+    sessions = SessionService(db, settings)
+    agent_session = await sessions.get_active(user.id)
+    action_service = ActionService(db, settings, runner, task_queue, redis_client)
     result = await action_service.queue_session_slash_command(
         user.id,
         command,
         workspace,
         project_id=user.active_project_id,
     )
+    if result.result_type == ActionResultType.REDIRECT_REQUESTED:
+        if agent_session is not None:
+            await edit_session_live_via_message(
+                redis_client,
+                message,
+                agent_session.id,
+                REDIRECT_STATUS_TEXT,
+                settings,
+            )
+        return
     if result.result_type == ActionResultType.TASK_QUEUED:
         return
     await message.answer(result.message)
@@ -79,6 +101,7 @@ async def cmd_summarize(
     telegram_user_id: int,
     task_queue: TaskQueue,
     runner: ProcessRunner,
+    redis_client: Redis,  # type: ignore[type-arg]
 ) -> None:
     await _run_cursor_slash_command(
         message,
@@ -88,6 +111,7 @@ async def cmd_summarize(
         telegram_user_id,
         task_queue,
         runner,
+        redis_client,
     )
 
 
@@ -122,6 +146,7 @@ async def cmd_context(
     telegram_user_id: int,
     task_queue: TaskQueue,
     runner: ProcessRunner,
+    redis_client: Redis,  # type: ignore[type-arg]
 ) -> None:
     await _run_cursor_slash_command(
         message,
@@ -131,6 +156,7 @@ async def cmd_context(
         telegram_user_id,
         task_queue,
         runner,
+        redis_client,
     )
 
 
@@ -307,7 +333,21 @@ async def handle_session_callback(
             await message.answer("Unknown action")
             return
     except SessionError as exc:
-        await message.answer(str(exc))
+        if message.reply_markup is not None:
+            await message.edit_text(
+                str(exc),
+                reply_markup=menu_back_keyboard("menu:sub:sessions"),
+            )
+        else:
+            await message.answer(str(exc))
+        return
+
+    if message.reply_markup is not None:
+        body = prepare_menu_text(text, settings.cursor_agent_max_output_bytes)
+        await message.edit_text(
+            body,
+            reply_markup=menu_back_keyboard("menu:sub:sessions"),
+        )
         return
 
     await _send_reply(message, text, settings)

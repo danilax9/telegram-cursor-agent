@@ -54,10 +54,20 @@ async def cmd_account(
             if not target:
                 await message.answer("Укажи id: `/account use main`")
                 return
-            account = await service.set_active_account(target)
-            await message.answer(
-                f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)"
+            if not service.should_switch_on_worker():
+                account = await service.set_active_account(target)
+                await message.answer(
+                    f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)"
+                )
+                return
+            user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+            if user is None:
+                await message.answer("Сначала отправь /start.")
+                return
+            text = await login_service.queue_account_switch(
+                db, task_queue, user.id, telegram_user_id, target
             )
+            await message.answer(text)
             return
 
         if action == "limits":

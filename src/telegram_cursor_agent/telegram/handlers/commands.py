@@ -13,17 +13,36 @@ from redis.asyncio import Redis
 from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
 from telegram_cursor_agent.services.cursor_models import CursorModelsError, load_models
 from telegram_cursor_agent.telegram.model_keyboards import (
-    model_families_keyboard,
-    model_selection_text,
+    initial_picker_state,
+    model_picker_keyboard,
+    model_picker_text,
 )
 from telegram_cursor_agent.services.usage import (
     CursorUsageError,
     format_usage_message,
 )
-from telegram_cursor_agent.telegram.keyboards import main_menu_keyboard
+from telegram_cursor_agent.telegram.menu_navigation import build_home_view
 from telegram_cursor_agent.telegram.messages import START_MESSAGE
 
 router = Router()
+
+
+async def send_main_menu(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+) -> None:
+    user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+    if user is None:
+        return
+    text, markup = await build_home_view(
+        db=db,
+        settings=settings,
+        user=user,
+        telegram_user_id=telegram_user_id,
+    )
+    await message.answer(text, reply_markup=markup)
 
 
 @router.message(Command("start"))
@@ -40,7 +59,22 @@ async def cmd_start(
         username=message.from_user.username if message.from_user else None,
         is_admin=True if is_owner else None,
     )
-    await message.answer(START_MESSAGE, reply_markup=main_menu_keyboard())
+    await message.answer(START_MESSAGE)
+    await send_main_menu(message, db, settings, telegram_user_id)
+
+
+@router.message(Command("menu"))
+async def cmd_menu(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+) -> None:
+    user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+    if user is None:
+        await message.answer("Сначала отправь /start.")
+        return
+    await send_main_menu(message, db, settings, telegram_user_id)
 
 
 @router.message(Command("model"))
@@ -50,9 +84,10 @@ async def cmd_model(message: Message, settings: Settings) -> None:
     except CursorModelsError as exc:
         await message.answer(str(exc))
         return
+    state = initial_picker_state(models, settings)
     await message.answer(
-        model_selection_text(models),
-        reply_markup=model_families_keyboard(models),
+        model_picker_text(models, state, settings),
+        reply_markup=model_picker_keyboard(models, state, settings),
     )
 
 

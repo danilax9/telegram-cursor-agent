@@ -131,7 +131,7 @@ class ProcessRunner:
         handle.cancelled = True
         try:
             os.killpg(os.getpgid(handle.pid), signal.SIGTERM)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.15)
             if handle.process.returncode is None:
                 os.killpg(os.getpgid(handle.pid), signal.SIGKILL)
         except OSError:
