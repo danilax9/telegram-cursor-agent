@@ -74,7 +74,7 @@ async def test_thinking_status_on_worker_start(live_notifier: LiveMessageNotifie
     )
 
 
-async def test_finalize_rich_sends_final_message_without_edit(
+async def test_finalize_rich_replaces_live_message_in_place(
     test_settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from telegram_cursor_agent.core.config import Settings, clear_settings_cache
@@ -93,8 +93,9 @@ async def test_finalize_rich_sends_final_message_without_edit(
     await live.update("Промежуточный шаг")
     await live.finalize("**Итог**")
 
-    notifier.send.assert_awaited_once_with(12345, "**Итог**")
-    notifier.edit_live_message.assert_not_awaited()
+    notifier.edit_live_message.assert_awaited()
+    assert notifier.edit_live_message.await_args.kwargs.get("rich_markdown") is True
+    notifier.send.assert_not_awaited()
 
 
 async def test_live_tool_calls_use_rich_when_enabled(

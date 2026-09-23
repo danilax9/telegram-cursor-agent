@@ -60,7 +60,7 @@ class LiveMessageNotifier:
                 safe_text = sanitize_for_telegram_rich(
                     text.strip(), self._settings.cursor_agent_max_output_bytes
                 )
-                await self._apply_live_text(safe_text, rich_markdown=True)
+                await self._apply_live_text(safe_text)
                 return
             safe_text = sanitize_for_telegram_markdown_v2(
                 text.strip(),
@@ -81,7 +81,7 @@ class LiveMessageNotifier:
                 safe_text = sanitize_for_telegram_rich(
                     text.strip(), self._settings.cursor_agent_max_output_bytes
                 )
-                await self._apply_live_text(safe_text, rich_markdown=True)
+                await self._apply_live_text(safe_text)
                 return
             safe_text = sanitize_for_telegram_markdown_v2(
                 escape_telegram_markdown_v2(text.strip()),
@@ -140,11 +140,23 @@ class LiveMessageNotifier:
         if not safe_text:
             return
 
+        chunks = split_telegram_message(safe_text)
+
         if self._settings.telegram_uses_rich_messages:
-            await self._notifier.send(self._telegram_id, safe_text)
+            if self._message_id is not None:
+                await self._notifier.edit_live_message(
+                    self._telegram_id,
+                    self._message_id,
+                    chunks[0],
+                    rich_markdown=True,
+                )
+                for chunk in chunks[1:]:
+                    await self._notifier.send(self._telegram_id, chunk)
+                return
+            for chunk in chunks:
+                await self._notifier.send(self._telegram_id, chunk)
             return
 
-        chunks = split_telegram_message(safe_text)
         if self._message_id is None:
             for chunk in chunks:
                 await self._notifier.send(self._telegram_id, chunk)
