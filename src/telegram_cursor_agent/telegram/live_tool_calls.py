@@ -11,7 +11,7 @@ from telegram_cursor_agent.telegram.live_message import (
     format_progress_message,
 )
 
-LIVE_TOOL_CALLS_MAX = 5
+LIVE_TOOL_CALLS_MAX = 30
 _RICH_DETAILS_MARKER = "# Details"
 
 

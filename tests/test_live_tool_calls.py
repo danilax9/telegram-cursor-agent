@@ -46,16 +46,16 @@ def test_rich_composer_uses_details_when_enabled() -> None:
     assert "\n\n>" not in display
 
 
-def test_composer_keeps_at_most_five_tool_calls() -> None:
+def test_composer_keeps_at_most_thirty_tool_calls() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
-    for index in range(6):
+    for index in range(31):
         composer.on_tool_call(f"🔧 Shell: cmd-{index}")
-    assert len(composer._tools) == 5
+    assert len(composer._tools) == 30
     assert composer._tools[0] == "🔧 Shell: cmd-1"
-    assert composer._tools[-1] == "🔧 Shell: cmd-5"
+    assert composer._tools[-1] == "🔧 Shell: cmd-30"
     display = composer.display()
     assert "cmd-0" not in display
-    assert "cmd\\-5" in display
+    assert "cmd\\-30" in display
 
 
 def test_composer_drops_oldest_tools_when_single_line_exceeds_telegram_limit() -> None:
