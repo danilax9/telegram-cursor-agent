@@ -33,9 +33,10 @@ def test_composer_resets_tools_on_new_step() -> None:
 def test_rich_details_block_instead_of_blockquote() -> None:
     text = compose_live_with_tool_details("💬 Шаг", ["🔧 Shell: ls"])
     assert "<blockquote expandable>" in text
-    assert "🔧 Инструменты (1)" in text
+    assert "<b>" in text
+    assert "Инструменты (1)" in text
     assert "Shell: ls" in text
-    assert "<details>" not in text
+    assert "<ul>" not in text
     assert not text.startswith(">")
 
 

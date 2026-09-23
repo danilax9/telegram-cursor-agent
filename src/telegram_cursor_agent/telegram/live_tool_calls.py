@@ -12,8 +12,6 @@ from telegram_cursor_agent.telegram.live_message import (
 )
 
 LIVE_TOOL_CALLS_MAX = 30
-_BLOCKQUOTE_EXPANDABLE_OPEN = '<blockquote expandable>'
-_BLOCKQUOTE_CLOSE = "</blockquote>"
 
 
 def _blockquote_line(line: str) -> str:
@@ -37,25 +35,23 @@ def _escape_rich_html(text: str) -> str:
     )
 
 
-def _rich_tool_list_item(line: str) -> str:
-    safe = _escape_rich_html(line.strip().replace("`", "'"))
-    return f"<li><code>{safe}</code></li>"
-
-
 def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str:
-    """Rich Message live card: planning line + expandable blockquote (collapsible quote)."""
-    base = base_text.strip()
+    """Rich Message HTML: planning line + expandable blockquote (collapsible quote)."""
+    base = _escape_rich_html(base_text.strip())
     if not tool_lines:
         return base
     count = len(tool_lines)
     summary = f"🔧 Инструменты ({count})"
-    items = "\n".join(_rich_tool_list_item(line) for line in tool_lines)
+    tool_rows = "<br>".join(
+        f"<code>{_escape_rich_html(line.strip().replace('`', chr(39)))}</code>"
+        for line in tool_lines
+    )
     return (
         f"{base}\n\n"
-        f"{_BLOCKQUOTE_EXPANDABLE_OPEN}\n"
-        f"<strong>{_escape_rich_html(summary)}</strong>\n"
-        f"<ul>\n{items}\n</ul>\n"
-        f"{_BLOCKQUOTE_CLOSE}"
+        f"<blockquote expandable>"
+        f"<b>{_escape_rich_html(summary)}</b><br>"
+        f"{tool_rows}"
+        f"</blockquote>"
     )
 
 

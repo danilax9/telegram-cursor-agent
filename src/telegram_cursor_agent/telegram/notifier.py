@@ -34,35 +34,48 @@ async def _edit_live_rich_with_fallback(
     *,
     telegram_id: int,
     message_id: int,
-    markdown: str,
     reply_markup: InlineKeyboardMarkup | None,
+    markdown: str | None = None,
+    html: str | None = None,
 ) -> None:
+    rich = (
+        InputRichMessage(html=html)
+        if html is not None
+        else InputRichMessage(markdown=markdown or "")
+    )
+    payload = html if html is not None else markdown or ""
     try:
         await bot.edit_message_text(
             chat_id=telegram_id,
             message_id=message_id,
-            rich_message=InputRichMessage(markdown=markdown),
+            rich_message=rich,
             reply_markup=reply_markup,
         )
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return
         if _is_message_too_long(exc):
-            without_tools = strip_live_tool_section(markdown)
-            if without_tools and without_tools != markdown:
+            without_tools = strip_live_tool_section(payload)
+            if without_tools and without_tools != payload:
                 await _edit_live_rich_with_fallback(
                     bot,
                     telegram_id=telegram_id,
                     message_id=message_id,
-                    markdown=without_tools,
+                    markdown=without_tools if html is None else None,
+                    html=without_tools if html is not None else None,
                     reply_markup=reply_markup,
                 )
                 return
+        logger.warning(
+            "telegram_rich_live_edit_failed",
+            chat_id=telegram_id,
+            error=str(exc),
+        )
         try:
             await bot.edit_message_text(
                 chat_id=telegram_id,
                 message_id=message_id,
-                text=markdown,
+                text=payload,
                 reply_markup=reply_markup,
                 parse_mode=None,
             )
@@ -166,7 +179,29 @@ class TelegramNotifier:
         *,
         markdown_v2: bool = False,
         rich_markdown: bool = False,
+        rich_html: bool = False,
     ) -> int:
+        if rich_html:
+            try:
+                message = await self._bot.send_rich_message(
+                    telegram_id, InputRichMessage(html=text)
+                )
+                return message.message_id
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "telegram_rich_live_send_failed",
+                    chat_id=telegram_id,
+                    error=str(exc),
+                )
+                if _is_message_too_long(exc):
+                    without_tools = strip_live_tool_section(text)
+                    if without_tools and without_tools != text:
+                        message = await self._bot.send_rich_message(
+                            telegram_id, InputRichMessage(html=without_tools)
+                        )
+                        return message.message_id
+                message = await self._bot.send_message(telegram_id, text, parse_mode=None)
+                return message.message_id
         if rich_markdown:
             try:
                 message = await self._bot.send_rich_message(
@@ -208,7 +243,17 @@ class TelegramNotifier:
         reply_markup: InlineKeyboardMarkup | None = None,
         markdown_v2: bool = False,
         rich_markdown: bool = False,
+        rich_html: bool = False,
     ) -> None:
+        if rich_html:
+            await _edit_live_rich_with_fallback(
+                self._bot,
+                telegram_id=telegram_id,
+                message_id=message_id,
+                html=text,
+                reply_markup=reply_markup,
+            )
+            return
         if rich_markdown:
             await _edit_live_rich_with_fallback(
                 self._bot,

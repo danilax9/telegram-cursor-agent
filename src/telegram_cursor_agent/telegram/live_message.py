@@ -109,6 +109,9 @@ class LiveMessageNotifier:
         use_rich = rich_markdown or (
             self._tool_calls_in_live and self._settings.telegram_uses_rich_messages
         )
+        use_rich_html = (
+            self._tool_calls_in_live and self._settings.telegram_uses_rich_messages
+        )
         use_v2 = (
             markdown_v2
             or (self._tool_calls_in_live and not self._settings.telegram_uses_rich_messages)
@@ -118,7 +121,8 @@ class LiveMessageNotifier:
                 self._telegram_id,
                 safe_text,
                 markdown_v2=use_v2,
-                rich_markdown=use_rich,
+                rich_markdown=use_rich and not use_rich_html,
+                rich_html=use_rich_html,
             )
             return
 
@@ -127,7 +131,8 @@ class LiveMessageNotifier:
             self._message_id,
             safe_text,
             markdown_v2=use_v2,
-            rich_markdown=use_rich,
+            rich_markdown=use_rich and not use_rich_html,
+            rich_html=use_rich_html,
         )
 
     async def finalize(self, text: str) -> None:
