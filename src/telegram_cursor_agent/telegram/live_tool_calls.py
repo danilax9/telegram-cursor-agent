@@ -23,7 +23,7 @@ def compose_live_with_tool_quotes(base_text: str, tool_lines: list[str]) -> str:
     base = escape_telegram_markdown_v2(base_text.strip())
     if not tool_lines:
         return base
-    quotes = "\n".join(_blockquote_line(line) for line in tool_lines)
+    quotes = "\n".join(_blockquote_line(line) for line in reversed(tool_lines))
     return f"{base}\n\n{quotes}"
 
 
@@ -36,20 +36,18 @@ def _escape_rich_html(text: str) -> str:
 
 
 def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str:
-    """Rich Message HTML: planning line + expandable blockquote (collapsible quote)."""
+    """Rich Message HTML: planning line + expandable blockquote (newest tool on top)."""
     base = _escape_rich_html(base_text.strip())
     if not tool_lines:
         return base
-    count = len(tool_lines)
-    summary = f"🔧 Инструменты ({count})"
+    newest_first = list(reversed(tool_lines))
     tool_rows = "<br>".join(
         f"<code>{_escape_rich_html(line.strip().replace('`', chr(39)))}</code>"
-        for line in tool_lines
+        for line in newest_first
     )
     return (
         f"{base}\n\n"
         f"<blockquote expandable>"
-        f"<b>{_escape_rich_html(summary)}</b><br>"
         f"{tool_rows}"
         f"</blockquote>"
     )
