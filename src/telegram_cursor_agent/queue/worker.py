@@ -1078,6 +1078,7 @@ class TaskWorker:
                     on_status=on_status,
                     on_process_start=on_process_start,
                     show_tool_calls_live=show_tool_calls_live,
+                    telegram_id=telegram_id,
                 )
 
                 failure = classify_agent_result(
@@ -1109,6 +1110,7 @@ class TaskWorker:
                             on_status=on_status,
                             on_process_start=on_process_start,
                             show_tool_calls_live=show_tool_calls_live,
+                            telegram_id=telegram_id,
                         )
 
                 if agent_result.cursor_chat_id and session_id:
@@ -1234,6 +1236,7 @@ class TaskWorker:
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
         *,
         show_tool_calls_live: bool = False,
+        telegram_id: int | None = None,
     ) -> AgentResult:
         session_id = task.session_id if task is not None else None
         task_id_str = str(task.id) if task is not None else None
@@ -1246,6 +1249,7 @@ class TaskWorker:
                 on_process_start=on_process_start,
                 process_env=process_env,
                 show_tool_calls_live=show_tool_calls_live,
+                telegram_id=telegram_id,
             )
 
         session_exec = SessionExecutionService(self._redis)
@@ -1322,6 +1326,7 @@ class TaskWorker:
                 on_process_start=on_process_start,
                 process_env=process_env,
                 show_tool_calls_live=show_tool_calls_live,
+                telegram_id=telegram_id,
             )
         finally:
             poll_stop.set()

@@ -254,6 +254,18 @@ class Settings(BaseSettings):
         default="rich_markdown",
         validation_alias=AliasChoices("TELEGRAM_MESSAGE_FORMAT"),
     )
+    user_memory_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("USER_MEMORY_ENABLED"),
+    )
+    user_memory_root: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("USER_MEMORY_ROOT"),
+    )
+    user_memory_max_prompt_bytes: int = Field(
+        default=8192,
+        validation_alias=AliasChoices("USER_MEMORY_MAX_PROMPT_BYTES"),
+    )
 
     @field_validator("telegram_message_format", mode="before")
     @classmethod
@@ -270,6 +282,7 @@ class Settings(BaseSettings):
         "sandbox_open",
         "self_deploy_enabled",
         "cursor_approve_mcps",
+        "user_memory_enabled",
         mode="before",
     )
     @classmethod
@@ -316,7 +329,7 @@ class Settings(BaseSettings):
             return [int(item) for item in value]
         return value
 
-    @field_validator("upload_host_path", mode="before")
+    @field_validator("upload_host_path", "user_memory_root", mode="before")
     @classmethod
     def parse_optional_path(cls, value: object) -> object:
         if value is None or value == "":

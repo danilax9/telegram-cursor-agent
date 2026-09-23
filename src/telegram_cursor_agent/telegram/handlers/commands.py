@@ -6,7 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.agent.prompts import HELP_TEXT
 from telegram_cursor_agent.core.config import Settings
-from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
+from telegram_cursor_agent.core.security import (
+    prepare_agent_reply_text,
+    sanitize_for_telegram,
+    split_telegram_message,
+)
+from telegram_cursor_agent.services.user_memory import format_memory_status
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from redis.asyncio import Redis
 
@@ -118,5 +123,17 @@ async def cmd_limits(
         f"Аккаунт: `{active.id}` ({active.label})\n\n{usage_text}",
         settings.cursor_agent_max_output_bytes,
     )
+    for chunk in split_telegram_message(text):
+        await message.answer(chunk)
+
+
+@router.message(Command("memory"))
+async def cmd_memory(
+    message: Message,
+    settings: Settings,
+    telegram_user_id: int,
+) -> None:
+    body = format_memory_status(settings, telegram_user_id)
+    text = prepare_agent_reply_text(body, settings)
     for chunk in split_telegram_message(text):
         await message.answer(chunk)

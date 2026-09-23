@@ -9,6 +9,7 @@ from typing import Any
 from telegram_cursor_agent.agent.prompts import (
     MODERN_WEB_RULE_CONTENT,
     SELF_DEPLOY_RULE_CONTENT,
+    USER_MEMORY_RULE_CONTENT,
     build_telegram_rule_content,
 )
 from telegram_cursor_agent.agent.skills import (
@@ -58,6 +59,8 @@ class CursorAgentAdapter:
         workspace: str,
         prompt: str,
         resume_chat_id: str | None = None,
+        *,
+        telegram_id: int | None = None,
     ) -> list[str]:
         self._ensure_agent_rules(workspace)
         cmd = [
@@ -82,7 +85,11 @@ class CursorAgentAdapter:
             cmd.extend(["--resume", resume_chat_id])
         if self._settings.cursor_approve_mcps:
             cmd.append("--approve-mcps")
-        cmd.append(compose_task_prompt(self._settings, workspace, prompt))
+        cmd.append(
+            compose_task_prompt(
+                self._settings, workspace, prompt, telegram_id=telegram_id
+            )
+        )
         return cmd
 
     async def run_prompt(
@@ -95,6 +102,7 @@ class CursorAgentAdapter:
         process_env: dict[str, str] | None = None,
         *,
         show_tool_calls_live: bool = False,
+        telegram_id: int | None = None,
     ) -> AgentResult:
         progress_handler: StreamProgressHandler | None = None
         if on_progress is not None:
@@ -113,7 +121,9 @@ class CursorAgentAdapter:
                 return
             await progress_handler.handle(data)
 
-        command = self.build_command(workspace, prompt, resume_chat_id)
+        command = self.build_command(
+            workspace, prompt, resume_chat_id, telegram_id=telegram_id
+        )
         result = await self._runner.run(
             command,
             cwd=workspace,
@@ -147,6 +157,8 @@ class CursorAgentAdapter:
             ("skills-routing.mdc", routing),
             ("modern-web.mdc", MODERN_WEB_RULE_CONTENT),
         ]
+        if self._settings.user_memory_enabled:
+            rule_files.append(("user-memory.mdc", USER_MEMORY_RULE_CONTENT))
         if self._settings.self_deploy_enabled:
             rule_files.append(("self-deploy.mdc", SELF_DEPLOY_RULE_CONTENT))
 

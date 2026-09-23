@@ -94,7 +94,7 @@ When to use formatting:
 - One-line or very short replies: plain text — no headings, tables, or decoration.
 
 Tables:
-- Only small tables (few rows/columns); otherwise use bullets (e.g. `• Ping: \`29 ms\``).
+- Only small tables (few rows/columns); otherwise use bullets (e.g. bullet lines like Ping: 29 ms in inline code).
 - The header row must name every column (e.g. `| Parameter | Value |`) — never empty header cells.
 
 Do not use HTML tags (<b>, <code>, <pre>, etc.) — use Markdown only.
@@ -171,6 +171,7 @@ HELP_TEXT = """Available commands:
 • /mcp add `name` — find and install an MCP (or: добавь mcp github)
 • /access — list who can use the bot (owner only)
 • /access add `id` — grant access to another Telegram account (owner only)
+• /memory — файлы user.md / soul.md / memory.md (долгая память)
 • /start — initialize bot
 """
 
@@ -198,6 +199,32 @@ When building or redesigning web UI, **read these Cursor Agent Skills** (full `S
 If implementing from Figma, read `figma-design-to-code` and use Figma MCP (`get_design_context`).
 
 Deliver responsive, accessible, production-ready UI — not generic template layouts.
+"""
+
+USER_MEMORY_RULE_CONTENT = """---
+description: Persistent per-user memory files (user.md, soul.md, memory.md)
+alwaysApply: true
+---
+
+## Persistent memory (per Telegram user)
+
+Each Telegram user has markdown files on the server. Paths appear in `[Persistent memory]` at the start of task prompts (when enabled).
+
+| File | Purpose |
+|------|---------|
+| `user.md` | Lasting preferences: language, timezone, stacks, default project |
+| `soul.md` | Optional tone/persona: verbosity, how to address the user |
+| `memory.md` | Dated facts and decisions («запомни …», «remember …») |
+
+When the user asks to remember something:
+1. **Append** a dated bullet to `memory.md` (format: `- YYYY-MM-DD: fact`).
+2. Move stable prefs into `user.md` instead of repeating them in `memory.md`.
+3. Keep entries short; dedupe obvious duplicates.
+4. **Never** store secrets (tokens, passwords, private keys).
+
+After updating memory files, briefly confirm what was saved (one line in the Telegram reply).
+
+The user can run `/memory` in the bot to see file locations.
 """
 
 SELF_DEPLOY_RULE_CONTENT = """---

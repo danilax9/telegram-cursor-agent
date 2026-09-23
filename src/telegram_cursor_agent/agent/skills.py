@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.services.user_memory import load_memory_prompt_section
 
 _FRONTMATTER_FIELD = re.compile(
     r"^([a-zA-Z0-9_-]+):\s*(.+?)\s*$",
@@ -299,7 +300,13 @@ def _format_required_skills(
     return "\n".join(lines)
 
 
-def compose_task_prompt(settings: Settings, workspace: str, prompt: str) -> str:
+def compose_task_prompt(
+    settings: Settings,
+    workspace: str,
+    prompt: str,
+    *,
+    telegram_id: int | None = None,
+) -> str:
     """Identity plus the skills that apply. System recovery notes stay untouched."""
     stripped = prompt.lstrip()
     if stripped.startswith("[Identity]"):
@@ -326,8 +333,11 @@ def compose_task_prompt(settings: Settings, workspace: str, prompt: str) -> str:
         "Пути скиллов абсолютные. `~` в процессе Cursor — дом аккаунта, не каталог скиллов.\n"
         f"Установленные скиллы: {names}\n\n"
         f"{_format_required_skills(selected, skills_root)}\n\n"
-        "[User task]\n"
     )
+    memory_block = load_memory_prompt_section(settings, telegram_id)
+    if memory_block:
+        header += memory_block
+    header += "[User task]\n"
     return f"{header}{prompt}"
 
 
