@@ -46,9 +46,12 @@ class ToolAwareStreamProgressHandler(StreamProgressHandler):
         event_text: Callable[[dict[str, Any], str], str],
         *,
         initial_status: str = THINKING_STATUS_TEXT,
+        use_rich_tool_details: bool = False,
     ) -> None:
         super().__init__(on_progress, event_text)
-        self._composer = ToolCallLiveComposer(initial_status)
+        self._composer = ToolCallLiveComposer(
+            initial_status, use_rich_details=use_rich_tool_details
+        )
 
     async def handle(self, data: dict[str, Any]) -> None:
         event_type = str(data.get("type", data.get("event", "")))

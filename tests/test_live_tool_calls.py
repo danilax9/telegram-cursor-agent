@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock
 from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
 from telegram_cursor_agent.agent.stream_progress import ToolAwareStreamProgressHandler
 from telegram_cursor_agent.telegram.live_message import THINKING_STATUS_TEXT
-from telegram_cursor_agent.telegram.live_tool_calls import ToolCallLiveComposer
+from telegram_cursor_agent.telegram.live_tool_calls import (
+    ToolCallLiveComposer,
+    compose_live_with_tool_details,
+    compose_live_with_tool_quotes,
+)
 
 
 def test_composer_accumulates_tools_under_thinking() -> None:
@@ -24,6 +28,22 @@ def test_composer_resets_tools_on_new_step() -> None:
     assert "Проверю код" in display
     assert "Shell" not in display
     assert "Shell" not in display
+
+
+def test_rich_details_block_instead_of_blockquote() -> None:
+    text = compose_live_with_tool_details("💬 Шаг", ["🔧 Shell: ls"])
+    assert "# Details" in text
+    assert "🔧 Инструменты (1)" in text
+    assert "`🔧 Shell: ls`" in text
+    assert not text.startswith(">")
+
+
+def test_rich_composer_uses_details_when_enabled() -> None:
+    composer = ToolCallLiveComposer(THINKING_STATUS_TEXT, use_rich_details=True)
+    composer.on_tool_call("🔧 Shell: ls")
+    display = composer.display()
+    assert "# Details" in display
+    assert "\n\n>" not in display
 
 
 def test_composer_keeps_at_most_five_tool_calls() -> None:

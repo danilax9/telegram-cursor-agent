@@ -176,6 +176,15 @@ def strip_live_tool_quotes(display_text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def strip_live_tool_section(display_text: str) -> str:
+    """Drop tool-call section from live preview (MarkdownV2 quotes or Rich Details)."""
+    marker = "# Details"
+    index = display_text.find(marker)
+    if index != -1:
+        return display_text[:index].strip()
+    return strip_live_tool_quotes(display_text)
+
+
 def split_telegram_message(text: str, max_len: int = 4000) -> list[str]:
     if len(text) <= max_len:
         return [text]

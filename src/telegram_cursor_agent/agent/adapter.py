@@ -108,7 +108,9 @@ class CursorAgentAdapter:
         if on_progress is not None:
             if show_tool_calls_live:
                 progress_handler = ToolAwareStreamProgressHandler(
-                    on_progress, self._event_text
+                    on_progress,
+                    self._event_text,
+                    use_rich_tool_details=self._settings.telegram_uses_rich_messages,
                 )
             else:
                 progress_handler = StreamProgressHandler(on_progress, self._event_text)
