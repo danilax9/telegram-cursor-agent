@@ -168,7 +168,12 @@ def git_submenu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def cursor_submenu_keyboard() -> InlineKeyboardMarkup:
+def cursor_submenu_keyboard(show_tool_calls_live: bool = False) -> InlineKeyboardMarkup:
+    tool_toggle = (
+        "🔧 Tool calls: вкл"
+        if show_tool_calls_live
+        else "🔧 Tool calls: выкл"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -177,6 +182,12 @@ def cursor_submenu_keyboard() -> InlineKeyboardMarkup:
                 ),
                 InlineKeyboardButton(
                     text="📊 Лимиты", callback_data="menu:act:limits"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=tool_toggle,
+                    callback_data="menu:act:toggle_tool_calls",
                 ),
             ],
             [

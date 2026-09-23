@@ -67,18 +67,31 @@ fi
 REDIS_CLI="${REDIS_CLI:-redis-cli}"
 REDIS_PORT="${REDIS_PORT:-6380}"
 WORKER_READY_KEY="${DEPLOY_WORKER_READY_KEY:-tca:worker:ready}"
+WORKER_RESTART_KEY="${DEPLOY_WORKER_RESTART_KEY:-tca:worker:restart_pending}"
 
-if command -v "$REDIS_CLI" >/dev/null 2>&1; then
+redis_invoke() {
+  # Prefer host redis-cli on the published port; fall back to the compose Redis service.
+  if command -v "$REDIS_CLI" >/dev/null 2>&1; then
+    "$REDIS_CLI" -p "$REDIS_PORT" "$@"
+    return
+  fi
+  if command -v docker >/dev/null 2>&1 && [[ -f docker-compose.yml ]]; then
+    docker compose exec -T redis redis-cli "$@"
+    return
+  fi
+  return 1
+}
+
+if redis_invoke DEL "$WORKER_READY_KEY" >/dev/null 2>&1; then
   log "Clearing stale worker ready key..."
-  "$REDIS_CLI" -p "$REDIS_PORT" DEL "$WORKER_READY_KEY" >/dev/null 2>&1 || true
+else
+  log "Could not clear worker ready key (non-fatal)."
 fi
 
-WORKER_RESTART_KEY="${DEPLOY_WORKER_RESTART_KEY:-tca:worker:restart_pending}"
-if command -v "$REDIS_CLI" >/dev/null 2>&1; then
+if redis_invoke SET "$WORKER_RESTART_KEY" 1 EX 600 >/dev/null 2>&1; then
   log "Scheduling graceful worker restart after current task..."
-  "$REDIS_CLI" -p "$REDIS_PORT" SET "$WORKER_RESTART_KEY" 1 EX 600 >/dev/null 2>&1 || true
 else
-  log "Redis unavailable; scheduling delayed worker restart ($WORKER_SERVICE)..."
+  log "Redis unreachable; scheduling delayed worker restart ($WORKER_SERVICE)..."
   nohup bash -c "sleep 60 && systemctl restart ${WORKER_SERVICE}" >>"$LOG_FILE" 2>&1 &
   disown || true
 fi
@@ -86,19 +99,45 @@ fi
 MARKER="${REPO_ROOT}/.deploy-pending.json"
 if [[ -f "$MARKER" ]]; then
   MARKER_PATH="$MARKER" "$UV_BIN" run python - <<'PY'
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 import os
 
+from telegram_cursor_agent.core.config import get_settings
+from telegram_cursor_agent.database.session import create_engine, create_session_factory
+from telegram_cursor_agent.services.deploy_context_snapshot import refresh_deploy_context_from_db
+from telegram_cursor_agent.services.deploy_resume import DeployContext, context_as_dict, read_marker
+
 path = Path(os.environ["MARKER_PATH"])
-data = json.loads(path.read_text())
-data["status"] = "pending_resume"
-data["completed_at"] = datetime.now(UTC).isoformat()
-data["recovery_token"] = str(uuid.uuid4())
-data.pop("deploy_log", None)
-path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+settings = get_settings()
+raw = json.loads(path.read_text())
+
+
+async def refresh() -> dict:
+    marker = read_marker(settings)
+    if marker is None:
+        return raw
+    engine = create_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        context = await refresh_deploy_context_from_db(
+            session_factory, marker.to_context(), settings
+        )
+    finally:
+        await engine.dispose()
+    merged = {**raw, **{k: v for k, v in context_as_dict(context).items() if v is not None}}
+    return merged
+
+
+raw = asyncio.run(refresh())
+raw["status"] = "pending_resume"
+raw["completed_at"] = datetime.now(UTC).isoformat()
+raw["recovery_token"] = str(uuid.uuid4())
+raw.pop("deploy_log", None)
+path.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
 PY
 else
   DEPLOY_TELEGRAM_ID="${DEPLOY_TELEGRAM_ID:-}"
@@ -138,7 +177,7 @@ async def build_context() -> DeployContext:
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
     try:
-        context = await snapshot_running_deploy_context(session_factory)
+        context = await snapshot_running_deploy_context(session_factory, settings)
     finally:
         await engine.dispose()
     if context is not None:

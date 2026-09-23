@@ -18,24 +18,29 @@ from telegram_cursor_agent.database.repositories.session import SessionRepositor
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.services.deploy_context_snapshot import (
+    refresh_deploy_context_from_db,
+)
 from telegram_cursor_agent.services.deploy_resume import (
     DEPLOY_RESUME_PROMPT,
     DEPLOY_SUCCESS_MESSAGE,
     INTERRUPTED_RECOVERY_MESSAGE,
-    INTERRUPTED_RESUME_PROMPT,
     MAX_RECOVERY_ATTEMPTS,
     NO_SESSION_RECOVERY_MESSAGE,
     RECOVERY_ATTEMPT_KEY,
     RECOVERY_EXHAUSTED_MESSAGE,
     SESSION_ACTIVE_STATUS,
     DeployContext,
+    build_interrupt_recovery_prompt,
     claim_marker_for_delivery,
     clear_marker,
+    consume_clean_shutdown,
     read_marker,
     release_claim,
     should_recover_deploy,
     store_recovery_state,
 )
+from telegram_cursor_agent.services.session_execution import SessionExecutionService
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 logger = get_logger(__name__)
@@ -57,7 +62,10 @@ class DeployRecoveryService:
     async def recover_tasks_on_startup(self) -> None:
         notifications: list[dict[str, object]] = []
         resumed_sessions: set[uuid.UUID] = set()
-        interrupt_resumes: list[tuple[DeployContext, int]] = []
+        interrupt_resumes: list[tuple[DeployContext, int, str]] = []
+        # systemctl / self-deploy sends SIGTERM. That is a normal restart, not
+        # a crash loop, so it must not exhaust the auto-resume budget.
+        intentional_stop = consume_clean_shutdown(self._settings)
         marker = read_marker(self._settings)
         deploy_recovery = marker is not None and should_recover_deploy(marker)
         if deploy_recovery:
@@ -79,6 +87,7 @@ class DeployRecoveryService:
             interrupted = await tasks.list_running(limit=None)
 
             for task in interrupted:
+                await self._release_session_lease(task.session_id)
                 user = await users.get_by_id(task.user_id)
                 self._terminate_orphan_process(task.process_pid)
 
@@ -124,6 +133,8 @@ class DeployRecoveryService:
                 workspace = workspace or payload.get("agent_workspace") or payload.get(
                     "workspace"
                 )
+                if workspace:
+                    workspace = self._settings.normalize_cursor_workspace(str(workspace))
                 attempt = _recovery_attempt(payload)
 
                 if not cursor_chat_id or not workspace:
@@ -140,7 +151,7 @@ class DeployRecoveryService:
                         )
                     continue
 
-                if attempt >= MAX_RECOVERY_ATTEMPTS:
+                if not intentional_stop and attempt >= MAX_RECOVERY_ATTEMPTS:
                     await tasks.mark_failed(
                         task.id,
                         "Interrupted by service restart (recovery attempts exhausted).",
@@ -182,7 +193,8 @@ class DeployRecoveryService:
                                     cursor_chat_id=str(cursor_chat_id),
                                     workspace=str(workspace),
                                 ),
-                                attempt + 1,
+                                1 if intentional_stop else attempt + 1,
+                                str(payload.get("prompt", "")),
                             )
                         )
                 if task.session_id:
@@ -192,17 +204,15 @@ class DeployRecoveryService:
 
         if deploy_recovery and marker is not None:
             deduped = _dedupe_notifications(notifications)
-            if not deduped and marker.telegram_id is not None:
-                if not await self._deploy_success_already_sent(marker):
-                    deduped = [
-                        {
-                            "telegram_id": marker.telegram_id,
-                            "message": DEPLOY_SUCCESS_MESSAGE,
-                        }
-                    ]
+            if marker.telegram_id is not None:
+                deduped = _ensure_online_notification(
+                    deduped, int(marker.telegram_id)
+                )
             store_recovery_state(self._settings, notifications=deduped)
             await self._queue_session_resume(
-                marker.to_context(),
+                await refresh_deploy_context_from_db(
+                    self._session_factory, marker.to_context(), self._settings
+                ),
                 prompt=DEPLOY_RESUME_PROMPT,
                 recovery_flag="deploy_recovery",
                 attempt=1,
@@ -229,15 +239,34 @@ class DeployRecoveryService:
             delivered = await self._send_notifications(deduped)
             logger.info("interrupt_notifications_delivered", count=delivered)
 
-        for context, attempt in interrupt_resumes:
+        for context, attempt, original_prompt in interrupt_resumes:
+            refreshed = await refresh_deploy_context_from_db(
+                self._session_factory, context, self._settings
+            )
             await self._queue_session_resume(
-                context,
-                prompt=INTERRUPTED_RESUME_PROMPT,
+                refreshed,
+                prompt=build_interrupt_recovery_prompt(original_prompt),
                 recovery_flag="interrupt_recovery",
                 attempt=attempt,
             )
 
         if marker is not None and marker.status == SESSION_ACTIVE_STATUS:
+            stale_context = await refresh_deploy_context_from_db(
+                self._session_factory, marker.to_context(), self._settings
+            )
+            if (
+                stale_context.cursor_chat_id
+                and stale_context.workspace
+                and stale_context.user_id is not None
+                and stale_context.session_id not in resumed_sessions
+            ):
+                await self._queue_session_resume(
+                    stale_context,
+                    prompt=build_interrupt_recovery_prompt(None),
+                    recovery_flag="interrupt_recovery",
+                    attempt=1,
+                    silent=True,
+                )
             clear_marker(self._settings)
             logger.info("stale_session_active_marker_cleared")
 
@@ -253,19 +282,11 @@ class DeployRecoveryService:
             return
         delivered = 0
         try:
-            notifications = claimed.notifications or []
-            if not notifications:
-                # Pre-restart worker already sent success when the deploy task finished.
-                if await self._deploy_success_already_sent(claimed):
-                    logger.info("deploy_success_already_delivered")
-                    return
-                if claimed.telegram_id is not None:
-                    notifications = [
-                        {
-                            "telegram_id": claimed.telegram_id,
-                            "message": DEPLOY_SUCCESS_MESSAGE,
-                        }
-                    ]
+            notifications = list(claimed.notifications or [])
+            if claimed.telegram_id is not None:
+                notifications = _ensure_online_notification(
+                    notifications, int(claimed.telegram_id)
+                )
             delivered = await self._send_notifications(
                 _dedupe_notifications(notifications)
             )
@@ -301,8 +322,13 @@ class DeployRecoveryService:
             return
         delivered = 0
         try:
+            notifications = list(claimed.notifications or [])
+            if claimed.telegram_id is not None:
+                notifications = _ensure_online_notification(
+                    notifications, int(claimed.telegram_id)
+                )
             delivered = await self._send_notifications(
-                _dedupe_notifications(claimed.notifications or [])
+                _dedupe_notifications(notifications)
             )
         finally:
             release_claim(self._settings)
@@ -385,13 +411,32 @@ class DeployRecoveryService:
         attempt: int,
         silent: bool = False,
     ) -> None:
+        context = await refresh_deploy_context_from_db(
+            self._session_factory, context, self._settings
+        )
         if (
             self._redis is None
             or context.user_id is None
             or context.cursor_chat_id is None
             or not context.workspace
         ):
+            logger.warning(
+                "session_resume_skipped_missing_context",
+                session_id=str(context.session_id),
+                has_chat_id=context.cursor_chat_id is not None,
+                has_workspace=bool(context.workspace),
+            )
             return
+
+        payload_body: dict[str, object] = {
+            "prompt": prompt,
+            "agent_workspace": context.workspace,
+            recovery_flag: True,
+            RECOVERY_ATTEMPT_KEY: attempt,
+            "cursor_chat_id": context.cursor_chat_id,
+        }
+        if silent:
+            payload_body["silent_recovery"] = True
 
         async with self._session_factory() as db:
             tasks = TaskRepository(db)
@@ -399,15 +444,7 @@ class DeployRecoveryService:
                 user_id=context.user_id,
                 task_type="agent_prompt",
                 session_id=context.session_id,
-                payload=json.dumps(
-                    {
-                        "prompt": prompt,
-                        "agent_workspace": context.workspace,
-                        recovery_flag: True,
-                        RECOVERY_ATTEMPT_KEY: attempt,
-                        **({"silent_recovery": True} if silent else {}),
-                    }
-                ),
+                payload=json.dumps(payload_body),
             )
             await db.commit()
 
@@ -420,12 +457,17 @@ class DeployRecoveryService:
             attempt=attempt,
         )
 
-    async def _deploy_success_already_sent(self, marker) -> bool:
-        if not marker.task_id:
-            return False
-        async with self._session_factory() as db:
-            task = await TaskRepository(db).get_by_id(uuid.UUID(marker.task_id))
-        return task is not None and task.status == "completed"
+    async def _release_session_lease(self, session_id: uuid.UUID | None) -> None:
+        """A restarted worker does not own turns whose process already died."""
+        if session_id is None or self._redis is None:
+            return
+        try:
+            await SessionExecutionService(self._redis).abandon_session(session_id)
+        except Exception:
+            logger.exception(
+                "session_lease_release_failed",
+                session_id=str(session_id),
+            )
 
     async def _finalize_deploy_marker(self, marker, context: DeployContext) -> str | None:
         if context.telegram_id is None:
@@ -448,6 +490,23 @@ def _recovery_attempt(payload: dict) -> int:
         return int(payload.get(RECOVERY_ATTEMPT_KEY, 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _ensure_online_notification(
+    notifications: list[dict[str, object]],
+    telegram_id: int,
+) -> list[dict[str, object]]:
+    """Queue exactly one post-deploy online message (delivery is after worker restart)."""
+    rest = [
+        item
+        for item in notifications
+        if int(item.get("telegram_id", -1)) != telegram_id
+        or item.get("message") != DEPLOY_SUCCESS_MESSAGE
+    ]
+    return [
+        {"telegram_id": telegram_id, "message": DEPLOY_SUCCESS_MESSAGE},
+        *rest,
+    ]
 
 
 def _dedupe_notifications(

@@ -64,8 +64,15 @@ async def edit_session_live_via_message(
         await message.bot.edit_message_text(
             safe, chat_id=telegram_id, message_id=message_id
         )
-    except TelegramBadRequest:
-        await message.bot.edit_message_text(
-            safe, chat_id=telegram_id, message_id=message_id, parse_mode=None
-        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return True
+        try:
+            await message.bot.edit_message_text(
+                safe, chat_id=telegram_id, message_id=message_id, parse_mode=None
+            )
+        except TelegramBadRequest as retry_exc:
+            if "message is not modified" in str(retry_exc).lower():
+                return True
+            raise
     return True

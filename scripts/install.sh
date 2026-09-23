@@ -157,7 +157,7 @@ install_system_packages() {
   if need_cmd apt-get; then
     log "Installing system packages (git, curl, ca-certificates)..."
     run apt-get update -qq
-    run apt-get install -y -qq git curl ca-certificates gnupg lsb-release
+    run apt-get install -y -qq git curl ca-certificates gnupg lsb-release xz-utils
   elif need_cmd dnf; then
     log "Installing system packages via dnf..."
     run dnf install -y git curl ca-certificates
@@ -167,6 +167,35 @@ install_system_packages() {
   else
     warn "Unknown package manager; ensure git and curl are installed"
   fi
+}
+
+install_node_for_mcp() {
+  if need_cmd npx && npx --version >/dev/null 2>&1; then
+    log "Node.js / npx already available: $(command -v npx)"
+    return 0
+  fi
+  if [[ -x /usr/local/bin/npx ]] && /usr/local/bin/npx --version >/dev/null 2>&1; then
+    log "Node.js / npx already installed in /usr/local/bin"
+    return 0
+  fi
+  local node_ver="${TCA_NODE_VERSION:-22.14.0}"
+  local arch="linux-x64"
+  local uname_m
+  uname_m="$(uname -m)"
+  if [[ "${uname_m}" == "aarch64" || "${uname_m}" == "arm64" ]]; then
+    arch="linux-arm64"
+  fi
+  local tarball="node-v${node_ver}-${arch}.tar.xz"
+  local url="https://nodejs.org/dist/v${node_ver}/${tarball}"
+  log "Installing Node.js ${node_ver} for MCP (npx)..."
+  run curl -fsSL "${url}" -o "/tmp/${tarball}"
+  run tar -xJf "/tmp/${tarball}" -C /usr/local --strip-components=1
+  run rm -f "/tmp/${tarball}"
+  if ! /usr/local/bin/npx --version >/dev/null 2>&1; then
+    warn "npx не установился — MCP через npm могут не работать"
+    return 0
+  fi
+  log "npx: /usr/local/bin/npx ($( /usr/local/bin/node -v ))"
 }
 
 install_docker() {
@@ -561,6 +590,22 @@ prepare_directories() {
   fi
 }
 
+refresh_models_catalog() {
+  local install_root="$1"
+  if [[ ! -f "${install_root}/.env" ]]; then
+    return 0
+  fi
+  log "Обновление каталога моделей Cursor…"
+  if (
+    cd "${install_root}"
+    run "${UV_BIN}" run python scripts/refresh_cursor_models.py
+  ); then
+    log "Каталог моделей обновлён"
+  else
+    warn "Не удалось обновить каталог моделей. Выполните: cd ${install_root} && uv run python scripts/refresh_cursor_models.py"
+  fi
+}
+
 print_success() {
   local install_root="$1"
   echo ""
@@ -597,6 +642,7 @@ main() {
   install_system_packages
   install_docker
   install_uv
+  install_node_for_mcp
   install_cursor_cli
 
   clone_or_update_repo "${install_root}"
@@ -632,6 +678,7 @@ main() {
   write_accounts_json
   write_env_file "${install_root}" "${bot_token}" "${admin_ids}"
   install_python_package "${install_root}"
+  refresh_models_catalog "${install_root}"
   start_docker_stack "${install_root}"
   run_migrations "${install_root}"
   install_worker_service "${install_root}"

@@ -54,6 +54,7 @@ class ActionResult:
     message: str
     task_id: uuid.UUID | None = None
     confirmation_id: uuid.UUID | None = None
+    typing_indicator: bool = True
 
 
 ActionHandler = Callable[..., Awaitable[ActionResult]]
@@ -306,7 +307,12 @@ class ActionService:
         )
         await self._task_queue.enqueue(str(task.id))
         # The deploy script sends the single pre-restart warning; stay silent here.
-        return ActionResult(ActionResultType.TASK_QUEUED, "", task_id=task.id)
+        return ActionResult(
+            ActionResultType.TASK_QUEUED,
+            "",
+            task_id=task.id,
+            typing_indicator=False,
+        )
 
     async def _handle_deploy(
         self, user_id: uuid.UUID, *_args: object
@@ -379,7 +385,9 @@ class ActionService:
         payload_dict = {
             "prompt": prompt,
             "workspace": workspace,
-            "agent_workspace": workspace,
+            "agent_workspace": self._settings.normalize_cursor_workspace(
+                workspace
+            ),
         }
         payload_json = json.dumps(payload_dict, ensure_ascii=False)
 
@@ -389,12 +397,7 @@ class ActionService:
             else None
         )
 
-        running_tasks = await self._tasks.list_running_agent_for_session(session_id)
-        running_task_id: uuid.UUID | None = (
-            running_tasks[0].id if running_tasks else None
-        )
-        if running_task_id is None and session_exec is not None:
-            running_task_id = await session_exec.get_running_task_id(session_id)
+        running_task_id = await self._live_running_task_id(session_id, session_exec)
 
         if running_task_id is not None:
             if session_exec is None:
@@ -460,6 +463,37 @@ class ActionService:
             queued_message,
             task_id=task.id,
         )
+
+    async def _live_running_task_id(
+        self,
+        session_id: uuid.UUID,
+        session_exec: SessionExecutionService | None,
+    ) -> uuid.UUID | None:
+        """Redirect only into a worker that is still alive.
+
+        A DB row or Redis key left by SIGTERM is not a running turn. Treating
+        it as one publishes a redirect that nobody consumes, and every later
+        message follows the same dead path.
+        """
+        running_tasks = await self._tasks.list_running_agent_for_session(session_id)
+        if session_exec is None:
+            return running_tasks[0].id if running_tasks else None
+
+        live_task_id = await session_exec.get_running_task_id(session_id)
+        if live_task_id is not None:
+            return live_task_id
+
+        for task in running_tasks:
+            await self._tasks.mark_failed(
+                task.id,
+                "Worker that owned this turn is gone.",
+            )
+            logger.info(
+                "stale_running_turn_cleared",
+                session_id=str(session_id),
+                task_id=str(task.id),
+            )
+        return None
 
     async def _create_confirmation(
         self,

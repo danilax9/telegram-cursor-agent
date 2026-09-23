@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from telegram_cursor_agent.services.mcp_catalog import MCP_CATALOG, McpSecretRequirement, McpTemplate
+from telegram_cursor_agent.services.mcp_runtime import resolve_mcp_command
 
 
 @dataclass
@@ -53,7 +54,7 @@ class McpResearchResult:
 
     def build_definition(self, env: dict[str, str]) -> dict[str, Any]:
         definition: dict[str, Any] = {
-            "command": self.command,
+            "command": resolve_mcp_command(self.command),
             "args": self.args,
         }
         if env:

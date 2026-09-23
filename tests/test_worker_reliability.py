@@ -28,6 +28,9 @@ def _mock_notifier():
     notifier = MagicMock()
     notifier.send = AsyncMock()
     notifier.keep_typing = AsyncMock()
+    notifier.send_typing_once = AsyncMock()
+    notifier.send_live_start = AsyncMock(return_value=1)
+    notifier.edit_live_message = AsyncMock()
     notifier.close = AsyncMock()
     return notifier
 
@@ -259,8 +262,8 @@ async def test_timeout_is_reported_as_timeout_not_cancellation(
         assert stored.status == "failed"
         assert "timed out" in (stored.error or "")
 
-    notifier.send.assert_awaited_once()
-    message = notifier.send.await_args.args[1]
+    notifier.edit_live_message.assert_awaited_once()
+    message = notifier.edit_live_message.await_args.args[2]
     assert "Задача отменена" not in message
     assert "30 мин" in message
     assert "переписал config.py" in message

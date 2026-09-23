@@ -34,6 +34,23 @@ def _parse_single_path(value: object) -> Path:
     raise TypeError(msg)
 
 
+def default_cursor_skills_dirs() -> list[Path]:
+    """Skill library for this bot, not the active Cursor account home.
+
+    Account switching sets HOME to ``~/.cursor-accounts/<name>``. Skills
+    installed for telegram-cursor-agent live in the root user's Cursor dir.
+    """
+    home_skills = Path.home() / ".cursor" / "skills"
+    root_skills = Path("/root/.cursor/skills")
+    if ".cursor-accounts" in home_skills.parts and root_skills.is_dir():
+        return [root_skills]
+    if home_skills.is_dir():
+        return [home_skills]
+    if root_skills.is_dir():
+        return [root_skills]
+    return [home_skills]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -213,6 +230,10 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("CURSOR_APPROVE_MCPS"),
     )
+    cursor_skills_dirs: list[Path] = Field(
+        default_factory=default_cursor_skills_dirs,
+        validation_alias=AliasChoices("CURSOR_SKILLS_DIRS"),
+    )
     mcp_setup_ttl_seconds: int = Field(
         default=3600,
         validation_alias=AliasChoices("MCP_SETUP_TTL_SECONDS"),
@@ -287,7 +308,12 @@ class Settings(BaseSettings):
             return None
         return _parse_single_path(value)
 
-    @field_validator("project_search_roots", "allowed_project_roots", mode="before")
+    @field_validator(
+        "project_search_roots",
+        "allowed_project_roots",
+        "cursor_skills_dirs",
+        mode="before",
+    )
     @classmethod
     def parse_path_lists(cls, value: object) -> list[Path]:
         return parse_path_list(value)
@@ -387,6 +413,20 @@ class Settings(BaseSettings):
         if self.agent_workspace is not None:
             return self.agent_workspace
         return self.projects_root
+
+    def normalize_cursor_workspace(self, value: str | Path | None) -> str:
+        """Single canonical path for cursor-agent --workspace (required for --resume)."""
+        raw = str(value or self.projects_root).strip()
+        if raw == "/workspace":
+            raw = str(self.projects_root)
+        agent = str(self.resolved_agent_workspace)
+        project = str(self.projects_root)
+        if self.sandbox_open and agent == "/":
+            if raw in {"/", project}:
+                return "/"
+        if raw == "/":
+            return agent
+        return raw
 
     @property
     def effective_allowed_command_prefixes(self) -> list[str]:

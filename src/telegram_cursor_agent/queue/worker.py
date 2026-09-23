@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import signal
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -36,9 +38,9 @@ from telegram_cursor_agent.services.cursor_accounts import (
 )
 from telegram_cursor_agent.services.cursor_models import (
     REFRESH_MODELS_MENU_UPDATED,
+    catalog_from_models_output,
     load_models,
-    parse_models_output,
-    write_models_catalog,
+    models_catalog_is_present,
 )
 from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
 from telegram_cursor_agent.telegram.menu_navigation import (
@@ -60,10 +62,13 @@ from telegram_cursor_agent.services.deploy_resume import (
     DeployContext,
     claim_deploy_start_notification,
     clear_marker,
+    mark_clean_shutdown,
     read_marker,
     update_marker_completed,
+    update_marker_fields,
     write_marker,
 )
+from telegram_cursor_agent.services.mcp_config import McpConfigService
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
 from telegram_cursor_agent.services.outbound_attachments import (
     OutboundAttachment,
@@ -112,12 +117,16 @@ class TaskWorker:
         self._session_task_map: dict[str, str] = {}
         self._current_task_id: str | None = None
         self._last_watchdog_at = 0.0
+        self._stop = asyncio.Event()
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         setup_logging(self._settings)
         self._redis = await create_redis(self._settings)
         self._redis_pubsub = await create_redis(self._settings)
         self._queue = TaskQueue(self._redis, pubsub_redis=self._redis_pubsub)
+        await SessionExecutionService(self._redis).publish_owner()
+        self._install_signal_handlers()
         recovery = DeployRecoveryService(
             self._settings,
             self._session_factory,
@@ -130,6 +139,12 @@ class TaskWorker:
         except Exception:
             # A recovery failure must never stop the worker from serving new tasks.
             logger.exception("startup_recovery_failed")
+        await self._drain_orphan_redirects()
+        await self._ensure_models_catalog()
+        try:
+            McpConfigService(self._settings).repair_local_config()
+        except Exception:
+            logger.exception("mcp_config_repair_failed")
         logger.info("worker_started")
         try:
             CursorAccountService(self._settings, self._redis).list_accounts()
@@ -140,12 +155,12 @@ class TaskWorker:
 
         failures = 0
         try:
-            while True:
+            while not self._stop.is_set():
                 try:
                     if self._queue is None:
                         await asyncio.sleep(1)
                         continue
-                    task_id = await self._queue.dequeue(block_seconds=5)
+                    task_id = await self._queue.dequeue(block_seconds=1)
                     if task_id:
                         await self._process_task(task_id)
                     else:
@@ -178,6 +193,26 @@ class TaskWorker:
         for client in (self._redis, self._redis_pubsub):
             if client is not None:
                 await client.aclose()  # type: ignore[attr-defined]
+
+    async def _ensure_models_catalog(self) -> None:
+        if models_catalog_is_present(self._settings):
+            return
+        try:
+            models = await self._refresh_models_catalog_from_cli()
+            logger.info("models_catalog_bootstrapped", models=len(models))
+        except Exception:
+            logger.exception("models_catalog_bootstrap_failed")
+
+    async def _refresh_models_catalog_from_cli(self) -> list[dict[str, str]]:
+        result = await self._runner.run(
+            [self._settings.cursor_agent_bin, "models"],
+            sanitize_output=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"cursor-agent models failed: {result.stderr or result.returncode}"
+            )
+        return catalog_from_models_output(self._settings, result.stdout)
 
     async def _should_restart_after_deploy(self) -> bool:
         if self._redis is None:
@@ -269,6 +304,16 @@ class TaskWorker:
                 session_id=session_id,
                 task_id=task_id,
             )
+            # This worker does not own the turn. A redirect with no process
+            # used to return and leave the user's text in Redis forever.
+            if task_id is None:
+                try:
+                    await self._promote_orphan_redirect(session_id)
+                except Exception:
+                    logger.exception(
+                        "redirect_orphan_promote_failed",
+                        session_id=session_id,
+                    )
             return
         interrupted = await self._runner.cancel_pid(pid)
         if interrupted:
@@ -295,6 +340,145 @@ class TaskWorker:
                 logger.exception("redirect_failed_lookup_user", task_id=task_id)
         await self._notify_safe(telegram_id, "⚠️ Не удалось прервать текущую задачу")
 
+    def _install_signal_handlers(self) -> None:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, self._on_shutdown_signal)
+            except (NotImplementedError, RuntimeError):
+                logger.warning("shutdown_signal_handler_unavailable", signal=sig.name)
+                return
+
+    def _on_shutdown_signal(self) -> None:
+        # Synchronous: systemd may SIGKILL before the async handler runs.
+        try:
+            mark_clean_shutdown(self._settings)
+        except OSError:
+            logger.exception("clean_shutdown_mark_failed")
+        if self._shutdown_task is not None and not self._shutdown_task.done():
+            return
+        self._shutdown_task = asyncio.create_task(self._begin_shutdown())
+
+    async def _begin_shutdown(self) -> None:
+        """Release session ownership before systemd finishes killing us."""
+        logger.info("worker_shutdown_requested")
+        await self._release_owned_sessions()
+        current = self._current_task_id
+        pid = self._active_task_pids.get(current) if current else None
+        if pid is not None:
+            try:
+                await self._runner.cancel_pid(pid)
+            except Exception:
+                logger.exception("shutdown_cancel_failed", pid=pid)
+        self._stop.set()
+
+    async def _release_owned_sessions(self) -> None:
+        if self._redis is None:
+            return
+        session_exec = SessionExecutionService(self._redis)
+        for session_id in list(self._session_task_map):
+            try:
+                await session_exec.release_if_owner(uuid.UUID(session_id), os.getpid())
+            except Exception:
+                logger.exception("release_session_failed", session_id=session_id)
+        try:
+            await session_exec.clear_owner()
+        except Exception:
+            logger.exception("clear_owner_failed")
+
+    async def _drain_orphan_redirects(self) -> None:
+        """Turn redirects published while this process was down into tasks."""
+        if self._redis is None:
+            return
+        try:
+            session_ids = await SessionExecutionService(
+                self._redis
+            ).list_redirect_session_ids()
+        except Exception:
+            logger.exception("orphan_redirect_scan_failed")
+            return
+        for session_id in session_ids:
+            if str(session_id) in self._session_task_map:
+                continue
+            try:
+                await self._promote_orphan_redirect(str(session_id))
+            except Exception:
+                logger.exception(
+                    "redirect_orphan_promote_failed",
+                    session_id=str(session_id),
+                )
+
+    async def _promote_orphan_redirect(self, session_id: str) -> None:
+        """A redirect with no live process becomes an ordinary queued turn."""
+        if self._redis is None or self._queue is None:
+            return
+        try:
+            sid = uuid.UUID(session_id)
+        except ValueError:
+            return
+        session_exec = SessionExecutionService(self._redis)
+        # Drops a lease whose worker is already dead. A still-live owner
+        # keeps the payload and consumes it inside its own turn.
+        if await session_exec.get_running_task_id(sid) is not None:
+            logger.info("redirect_left_for_live_owner", session_id=session_id)
+            return
+        pending = await session_exec.consume_pending_redirect(sid)
+        if not pending:
+            logger.warning("redirect_orphan_empty", session_id=session_id)
+            return
+        prompt = str(pending.get("prompt", "")).strip()
+        if not prompt:
+            return
+        async with self._session_factory() as db:
+            agent_session = await SessionRepository(db).get_by_id(sid)
+            if agent_session is None:
+                logger.warning("redirect_orphan_no_session", session_id=session_id)
+                return
+            tasks = TaskRepository(db)
+            for stale in await tasks.list_running_agent_for_session(sid):
+                if str(stale.id) == self._current_task_id:
+                    continue
+                await tasks.mark_failed(
+                    stale.id,
+                    "Stale running turn replaced by a queued message.",
+                )
+            workspace = (
+                pending.get("agent_workspace")
+                or pending.get("workspace")
+                or agent_session.workspace_path
+            )
+            payload = {
+                "prompt": prompt,
+                "workspace": pending.get("workspace") or agent_session.workspace_path,
+                "agent_workspace": self._settings.normalize_cursor_workspace(
+                    str(workspace) if workspace is not None else None
+                ),
+            }
+            payload_json = json.dumps(payload, ensure_ascii=False)
+            pending_tasks = await tasks.list_pending_agent_for_session(sid)
+            if pending_tasks:
+                primary = pending_tasks[0]
+                for extra in pending_tasks[1:]:
+                    await tasks.mark_cancelled(extra.id)
+                await tasks.update_payload(primary.id, payload_json)
+                queued_id = str(primary.id)
+            else:
+                created = await tasks.create(
+                    user_id=agent_session.user_id,
+                    task_type="agent_prompt",
+                    payload=payload_json,
+                    session_id=sid,
+                    project_id=agent_session.project_id,
+                )
+                queued_id = str(created.id)
+            await db.commit()
+        await self._queue.enqueue(queued_id)
+        logger.info(
+            "redirect_orphan_promoted",
+            session_id=session_id,
+            task_id=queued_id,
+        )
+
     async def _recover_pending_tasks(self) -> None:
         async with self._session_factory() as db:
             pending = await TaskRepository(db).list_pending(limit=10)
@@ -305,8 +489,16 @@ class TaskWorker:
         task_id = uuid.UUID(task_id_str)
         claimed = await self._claim_task(task_id)
         if claimed is None:
+            if self._queue is not None:
+                try:
+                    async with self._session_factory() as db:
+                        orphan = await TaskRepository(db).get_by_id(task_id)
+                    if orphan is not None and orphan.status == "pending":
+                        await self._queue.enqueue(task_id_str)
+                except Exception:
+                    logger.exception("requeue_orphan_task_failed", task_id=task_id_str)
             return
-        task, telegram_id = claimed
+        task, telegram_id, show_tool_calls_live = claimed
         self._current_task_id = task_id_str
         if task.session_id is not None and task.task_type == "agent_prompt":
             self._session_task_map[str(task.session_id)] = task_id_str
@@ -317,7 +509,9 @@ class TaskWorker:
                     task.session_id, SessionExecState.RUNNING
                 )
         try:
-            await self._run_claimed_task(task, telegram_id)
+            await self._run_claimed_task(
+                task, telegram_id, show_tool_calls_live=show_tool_calls_live
+            )
         except Exception as exc:
             # Safety net: whatever fails, the task never stays "running" in silence.
             logger.exception("task_failed", task_id=task_id_str)
@@ -328,7 +522,9 @@ class TaskWorker:
             self._current_task_id = None
             self._active_task_pids.pop(task_id_str, None)
 
-    async def _claim_task(self, task_id: uuid.UUID) -> tuple[Task, int | None] | None:
+    async def _claim_task(
+        self, task_id: uuid.UUID
+    ) -> tuple[Task, int | None, bool] | None:
         """Mark the task running in a short transaction and snapshot what we need."""
         async with self._session_factory() as db:
             tasks = TaskRepository(db)
@@ -338,10 +534,19 @@ class TaskWorker:
             await tasks.mark_running(task_id)
             user = await UserRepository(db).get_by_id(task.user_id)
             telegram_id = user.telegram_id if user is not None else None
+            show_tool_calls_live = (
+                bool(user.show_tool_calls_live) if user is not None else False
+            )
             await db.commit()
-        return task, telegram_id
+        return task, telegram_id, show_tool_calls_live
 
-    async def _run_claimed_task(self, task: Task, telegram_id: int | None) -> None:
+    async def _run_claimed_task(
+        self,
+        task: Task,
+        telegram_id: int | None,
+        *,
+        show_tool_calls_live: bool = False,
+    ) -> None:
         task_id = task.id
         task_id_str = str(task_id)
         payload = json.loads(task.payload or "{}")
@@ -349,11 +554,17 @@ class TaskWorker:
         is_system_recovery = bool(
             payload.get("deploy_recovery") or payload.get("interrupt_recovery")
         )
-        skip_typing = task.task_type in {
-            "cursor_account_login",
-            "cursor_account_login_cancel",
-            "cursor_account_switch",
-        }
+        skip_typing = (
+            task.task_type
+            in {
+                "cursor_account_login",
+                "cursor_account_login_cancel",
+                "cursor_account_switch",
+                "deploy",
+            }
+            or silent_recovery
+            or is_system_recovery
+        )
         typing_task = (
             asyncio.create_task(self._notifier.keep_typing(telegram_id))
             if telegram_id is not None and not skip_typing
@@ -371,7 +582,25 @@ class TaskWorker:
             await asyncio.gather(typing_task, return_exceptions=True)
             typing_task = None
 
+        async def refresh_typing() -> None:
+            if typing_task is not None and telegram_id is not None:
+                await self._notifier.send_typing_once(telegram_id)
+
         try:
+            if (
+                telegram_id is not None
+                and task.task_type == "agent_prompt"
+                and not silent_recovery
+            ):
+                live = LiveMessageNotifier(
+                    self._notifier,
+                    self._settings,
+                    telegram_id,
+                    tool_calls_in_live=show_tool_calls_live,
+                )
+                await live.update_status(THINKING_STATUS_TEXT)
+                await refresh_typing()
+
             if (
                 telegram_id is not None
                 and task.task_type == "agent_prompt"
@@ -382,14 +611,6 @@ class TaskWorker:
                     await self._build_deploy_context(task),
                     status=SESSION_ACTIVE_STATUS,
                 )
-
-            if (
-                telegram_id is not None
-                and task.task_type == "agent_prompt"
-                and not silent_recovery
-            ):
-                live = LiveMessageNotifier(self._notifier, self._settings, telegram_id)
-                await live.update_status(THINKING_STATUS_TEXT)
 
             live_ref_persisted = False
 
@@ -413,12 +634,17 @@ class TaskWorker:
 
             async def on_progress(text: str) -> None:
                 if live is not None:
-                    await live.update(text)
+                    if show_tool_calls_live:
+                        await live.replace_display(text)
+                    else:
+                        await live.update(text)
+                    await refresh_typing()
                     await _maybe_persist_live_ref()
 
             async def on_status(text: str) -> None:
                 if live is not None:
                     await live.update_status(text)
+                    await refresh_typing()
                     await _maybe_persist_live_ref()
 
             try:
@@ -427,6 +653,7 @@ class TaskWorker:
                     on_progress if live is not None else None,
                     telegram_id=telegram_id,
                     on_status=on_status if live is not None else None,
+                    show_tool_calls_live=show_tool_calls_live,
                 )
             except AgentTimeoutError as exc:
                 timeout_error = str(exc)
@@ -468,6 +695,7 @@ class TaskWorker:
                 telegram_id is not None
                 and not silent_recovery
                 and task.task_type != "cursor_account_login_cancel"
+                and task.task_type != "deploy"
                 and result != CURSOR_LOGIN_TASK_NOTIFIED
                 and result != REFRESH_MODELS_MENU_UPDATED
             ):
@@ -481,11 +709,9 @@ class TaskWorker:
         if task.task_type != "agent_prompt" or is_system_recovery:
             return
         marker = read_marker(self._settings)
-        if (
-            marker is not None
-            and marker.status == SESSION_ACTIVE_STATUS
-            and marker.task_id == str(task.id)
-        ):
+        if marker is None or marker.status != SESSION_ACTIVE_STATUS:
+            return
+        if marker.task_id == str(task.id):
             clear_marker(self._settings)
 
     def _timeout_message(self, exc: AgentTimeoutError) -> str:
@@ -602,7 +828,11 @@ class TaskWorker:
             )
             await self._mark_stuck(task.id)
             marker = read_marker(self._settings)
-            if marker is not None and marker.task_id == str(task.id):
+            if (
+                marker is not None
+                and marker.status == SESSION_ACTIVE_STATUS
+                and marker.task_id == str(task.id)
+            ):
                 clear_marker(self._settings)
             await self._notify_safe(telegram_id, STUCK_TASK_MESSAGE)
 
@@ -623,6 +853,8 @@ class TaskWorker:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         telegram_id: int | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        show_tool_calls_live: bool = False,
     ) -> str:
         payload = json.loads(task.payload or "{}")
         task_id_str = str(task.id)
@@ -710,18 +942,7 @@ class TaskWorker:
             return CURSOR_LOGIN_TASK_NOTIFIED
 
         if task.task_type == "refresh_models":
-            result = await self._runner.run(
-                [self._settings.cursor_agent_bin, "models"],
-                sanitize_output=False,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"cursor-agent models failed: {result.stderr or result.returncode}"
-                )
-            models = parse_models_output(result.stdout)
-            if not models:
-                raise RuntimeError("cursor-agent models returned no entries")
-            write_models_catalog(self._settings, models)
+            models = await self._refresh_models_catalog_from_cli()
             menu_raw = payload.get("menu_message")
             if isinstance(menu_raw, dict):
                 chat_id = int(menu_raw["chat_id"])
@@ -774,6 +995,7 @@ class TaskWorker:
                 on_progress=on_progress,
                 on_status=on_status,
                 on_process_start=on_process_start,
+                show_tool_calls_live=show_tool_calls_live,
             )
 
         raise ValueError(f"Unknown task type: {task.task_type}")
@@ -786,6 +1008,8 @@ class TaskWorker:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
+        *,
+        show_tool_calls_live: bool = False,
     ) -> str:
         accounts = CursorAccountService(self._settings, self._redis)
         switch_notice = ""
@@ -801,7 +1025,9 @@ class TaskWorker:
             payload.get("agent_workspace") or payload.get("workspace")
         )
         prompt = str(payload.get("prompt", ""))
-        resume_chat_id = None
+        resume_chat_id = payload.get("cursor_chat_id")
+        if resume_chat_id is not None:
+            resume_chat_id = str(resume_chat_id).strip() or None
         session_id = task.session_id
         session_exec = (
             SessionExecutionService(self._redis)
@@ -809,7 +1035,7 @@ class TaskWorker:
             else None
         )
 
-        if session_id:
+        if session_id and resume_chat_id is None:
             async with self._session_factory() as db:
                 sessions = SessionRepository(db)
                 agent_session = await sessions.get_by_id(session_id)
@@ -851,6 +1077,7 @@ class TaskWorker:
                     on_progress=on_progress,
                     on_status=on_status,
                     on_process_start=on_process_start,
+                    show_tool_calls_live=show_tool_calls_live,
                 )
 
                 failure = classify_agent_result(
@@ -875,12 +1102,13 @@ class TaskWorker:
                             adapter,
                             workspace,
                             prompt,
-                            None,
+                            resume_chat_id,
                             accounts.account_env(next_account),
                             task=task,
                             on_progress=on_progress,
                             on_status=on_status,
                             on_process_start=on_process_start,
+                            show_tool_calls_live=show_tool_calls_live,
                         )
 
                 if agent_result.cursor_chat_id and session_id:
@@ -891,6 +1119,11 @@ class TaskWorker:
                         )
                         await db.commit()
                     resume_chat_id = agent_result.cursor_chat_id
+                    update_marker_fields(
+                        self._settings,
+                        cursor_chat_id=agent_result.cursor_chat_id,
+                        session_id=str(session_id),
+                    )
 
                 pending = (
                     await session_exec.consume_pending_redirect(session_id)
@@ -977,8 +1210,7 @@ class TaskWorker:
                 break
         finally:
             if session_exec is not None and session_id is not None:
-                await session_exec.set_state(session_id, SessionExecState.IDLE)
-                await session_exec.clear_running_task(session_id)
+                await session_exec.release_if_owner(session_id, os.getpid())
 
         logger.info(
             "task_finished",
@@ -1000,6 +1232,8 @@ class TaskWorker:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
+        *,
+        show_tool_calls_live: bool = False,
     ) -> AgentResult:
         session_id = task.session_id if task is not None else None
         task_id_str = str(task.id) if task is not None else None
@@ -1011,6 +1245,7 @@ class TaskWorker:
                 on_progress=on_progress,
                 on_process_start=on_process_start,
                 process_env=process_env,
+                show_tool_calls_live=show_tool_calls_live,
             )
 
         session_exec = SessionExecutionService(self._redis)
@@ -1086,6 +1321,7 @@ class TaskWorker:
                 on_progress=on_progress,
                 on_process_start=on_process_start,
                 process_env=process_env,
+                show_tool_calls_live=show_tool_calls_live,
             )
         finally:
             poll_stop.set()
@@ -1103,11 +1339,17 @@ class TaskWorker:
 
         workspace = None
         if agent_session:
-            workspace = agent_session.workspace_path
+            workspace = self._settings.normalize_cursor_workspace(
+                agent_session.workspace_path
+            )
         elif self._settings.agent_workspace is not None:
-            workspace = str(self._settings.agent_workspace)
+            workspace = self._settings.normalize_cursor_workspace(
+                self._settings.agent_workspace
+            )
         else:
-            workspace = str(self._settings.self_repo_root)
+            workspace = self._settings.normalize_cursor_workspace(
+                self._settings.self_repo_root
+            )
 
         return DeployContext(
             task_id=task.id,
@@ -1119,12 +1361,9 @@ class TaskWorker:
         )
 
     def _resolve_workspace(self, value: object) -> str:
-        workspace = str(value or self._settings.projects_root)
-        # Bot containers use /workspace; the host worker sees the same bind
-        # mount at PROJECTS_ROOT and never follows the container-only path.
-        if workspace == "/workspace":
-            return str(self._settings.projects_root)
-        return workspace
+        return self._settings.normalize_cursor_workspace(
+            str(value) if value is not None else None
+        )
 
 
 def main() -> None:

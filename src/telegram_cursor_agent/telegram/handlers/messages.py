@@ -102,7 +102,8 @@ async def handle_text_message(
         return
 
     if result.result_type == ActionResultType.TASK_QUEUED:
-        await send_typing(message)
+        if result.typing_indicator:
+            await send_typing(message)
         return
 
     if result.result_type == ActionResultType.MCP_SETUP and result.confirmation_id:

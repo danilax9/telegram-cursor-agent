@@ -7,6 +7,7 @@ from pathlib import Path
 
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.execution.runner import ProcessRunner
+from telegram_cursor_agent.services.mcp_runtime import resolve_mcp_command
 
 
 class McpCliError(Exception):
@@ -21,8 +22,13 @@ class McpCliService:
     def is_available(self) -> bool:
         cli = self._settings.cursor_agent_bin
         if Path(cli).is_file():
-            return True
-        return shutil.which(cli) is not None
+            cli_ok = True
+        else:
+            cli_ok = shutil.which(cli) is not None
+        if not cli_ok:
+            return False
+        npx = resolve_mcp_command("npx")
+        return Path(npx).is_file() or shutil.which(npx) is not None
 
     async def list_servers(self) -> str:
         return await self._run("list")

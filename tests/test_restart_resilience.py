@@ -16,6 +16,8 @@ from telegram_cursor_agent.services.deploy_resume import (
     RECOVERY_EXHAUSTED_MESSAGE,
     DeployContext,
     claim_marker_for_delivery,
+    clean_shutdown_path,
+    mark_clean_shutdown,
     marker_path,
     read_marker,
     write_marker,
@@ -36,6 +38,7 @@ def _mock_redis():
     redis = MagicMock()
     redis.set = AsyncMock()
     redis.get = AsyncMock(return_value=None)
+    redis.delete = AsyncMock()
     redis.rpush = AsyncMock()
     redis.publish = AsyncMock()
     return redis
@@ -138,6 +141,37 @@ async def test_recovery_loop_is_capped(db_session, deploy_settings, tmp_path) ->
 
     notifier.send.assert_awaited_once()
     assert notifier.send.await_args.args[1] == RECOVERY_EXHAUSTED_MESSAGE
+
+
+async def test_second_deliberate_restart_still_resumes(
+    db_session, deploy_settings, tmp_path
+) -> None:
+    """systemctl / self-deploy is not a crash loop, even on the second restart."""
+    await _running_agent_task(
+        db_session,
+        tmp_path,
+        telegram_id=7010,
+        payload_extra={
+            "interrupt_recovery": True,
+            RECOVERY_ATTEMPT_KEY: MAX_RECOVERY_ATTEMPTS,
+        },
+    )
+    mark_clean_shutdown(deploy_settings)
+    session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    recovery = DeployRecoveryService(
+        deploy_settings,
+        session_factory,
+        notifier=_mock_notifier(),
+        redis=_mock_redis(),
+    )
+    await recovery.recover_tasks_on_startup()
+
+    async with session_factory() as check:
+        pending = await TaskRepository(check).list_pending(limit=10)
+        assert len(pending) == 1
+        payload = json.loads(pending[0].payload or "{}")
+        assert payload[RECOVERY_ATTEMPT_KEY] == 1
+    assert not clean_shutdown_path(deploy_settings).exists()
 
 
 async def test_resume_increments_attempt_counter(

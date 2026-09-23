@@ -194,6 +194,10 @@ class CursorAccountService:
         home = account.auth_file.parent.parent.parent
         if (home / ".config" / "cursor" / "auth.json").resolve() == account.auth_file.resolve():
             env["HOME"] = str(home)
+        path_prefix = "/usr/local/bin"
+        current = os.environ.get("PATH", "")
+        if path_prefix not in current.split(":"):
+            env["PATH"] = f"{path_prefix}:{current}" if current else path_prefix
         return env
 
     async def fetch_usage(self, account: CursorAccount | None = None) -> CursorUsageSnapshot:

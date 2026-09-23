@@ -115,10 +115,52 @@ def strip_unsupported_markdown(text: str) -> str:
     return cleaned
 
 
+def escape_telegram_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+_MD_V2_ESCAPE_CHARS = frozenset(r"_*[]()~`>#+-=|{}.!\\")
+
+
+def escape_telegram_markdown_v2(text: str) -> str:
+    """Escape text for Telegram MarkdownV2 (outside pre-formatted entities)."""
+    parts: list[str] = []
+    for char in text:
+        if char in _MD_V2_ESCAPE_CHARS:
+            parts.append(f"\\{char}")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
+def sanitize_for_telegram_html(text: str, max_bytes: int) -> str:
+    redacted = redact_secrets(text)
+    return truncate_output(redacted, max_bytes)
+
+
+def sanitize_for_telegram_markdown_v2(text: str, max_bytes: int) -> str:
+    redacted = redact_secrets(text)
+    return truncate_output(redacted, max_bytes)
+
+
 def sanitize_for_telegram(text: str, max_bytes: int) -> str:
     redacted = redact_secrets(text)
     cleaned = strip_unsupported_markdown(redacted)
     return truncate_output(cleaned, max_bytes)
+
+
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
+
+
+def strip_live_tool_quotes(display_text: str) -> str:
+    """Drop blockquoted tool-call lines from a composed live MarkdownV2 message."""
+    lines = display_text.split("\n")
+    kept = [line for line in lines if not line.startswith(">")]
+    return "\n".join(kept).strip()
 
 
 def split_telegram_message(text: str, max_len: int = 4000) -> list[str]:

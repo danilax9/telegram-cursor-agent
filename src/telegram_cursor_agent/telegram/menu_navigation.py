@@ -124,7 +124,10 @@ async def build_submenu_view(
         return "\n".join(lines), projects_picker_keyboard(projects, active_id)
 
     if submenu == "cursor":
-        return build_cursor_submenu_text(settings), cursor_submenu_keyboard()
+        return (
+            build_cursor_submenu_text(settings),
+            cursor_submenu_keyboard(user.show_tool_calls_live),
+        )
 
     if submenu == "accounts":
         return await build_accounts_menu_view(settings, redis_client)

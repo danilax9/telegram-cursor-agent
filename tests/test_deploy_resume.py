@@ -9,9 +9,14 @@ import pytest
 from telegram_cursor_agent.database.repositories.session import SessionRepository
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.database.repositories.user import UserRepository
-from telegram_cursor_agent.services.deploy_recovery import DeployRecoveryService
+from telegram_cursor_agent.services.deploy_recovery import (
+    DeployRecoveryService,
+    _dedupe_notifications,
+    _ensure_online_notification,
+)
 from telegram_cursor_agent.services.deploy_resume import (
     DEPLOY_PENDING_STATUS,
+    DEPLOY_SUCCESS_MESSAGE,
     DeployContext,
     claim_deploy_start_notification,
     clear_marker,
@@ -29,6 +34,19 @@ def deploy_settings(test_settings, tmp_path, monkeypatch):
 
     clear_settings_cache()
     return get_settings()
+
+
+def test_ensure_online_notification_is_single_per_user() -> None:
+    tid = 42
+    once = _ensure_online_notification([], tid)
+    twice = _ensure_online_notification(once, tid)
+    assert twice == once
+    deduped = _dedupe_notifications(
+        once
+        + [{"telegram_id": tid, "message": DEPLOY_SUCCESS_MESSAGE}]
+    )
+    assert len(deduped) == 1
+    assert deduped[0]["message"] == DEPLOY_SUCCESS_MESSAGE
 
 
 async def test_marker_roundtrip(deploy_settings) -> None:
@@ -65,10 +83,10 @@ def test_deploy_start_warning_is_sent_only_once(deploy_settings) -> None:
     assert marker.status == DEPLOY_PENDING_STATUS
 
 
-async def test_stored_notifications_skip_when_deploy_already_confirmed(
+async def test_stored_notifications_always_send_online_after_deploy(
     db_session, deploy_settings, tmp_path
 ) -> None:
-    """Worker must not re-send success if deploy task already notified the user."""
+    """DB completed does not mean Telegram got the online message — always send."""
     users = UserRepository(db_session)
     tasks = TaskRepository(db_session)
     user = await users.upsert(telegram_id=2003, username="admin", is_admin=True)
@@ -103,7 +121,9 @@ async def test_stored_notifications_skip_when_deploy_already_confirmed(
     )
     await recovery.deliver_stored_notifications()
 
-    notifier.send.assert_not_awaited()
+    notifier.send.assert_awaited_once_with(
+        user.telegram_id, DEPLOY_SUCCESS_MESSAGE
+    )
 
 
 async def test_worker_recovery_stores_notifications_without_sending(
@@ -175,7 +195,7 @@ async def test_worker_recovery_stores_notifications_without_sending(
     assert marker.notifications[0]["telegram_id"] == user.telegram_id
 
 
-async def test_recovery_skips_notify_for_completed_deploy_task(
+async def test_recovery_stores_online_notification_for_completed_deploy_task(
     db_session, deploy_settings, tmp_path
 ) -> None:
     users = UserRepository(db_session)
@@ -214,6 +234,13 @@ async def test_recovery_skips_notify_for_completed_deploy_task(
     await recovery.recover_tasks_on_startup()
 
     notifier.send.assert_not_awaited()
+    marker = read_marker(deploy_settings)
+    assert marker is not None
+    assert marker.tasks_recovered is True
+    assert any(
+        item.get("message") == DEPLOY_SUCCESS_MESSAGE
+        for item in (marker.notifications or [])
+    )
 
 
 async def test_recovery_queues_deploy_resume_task(
@@ -257,6 +284,8 @@ async def test_recovery_queues_deploy_resume_task(
 
     redis = MagicMock()
     redis.set = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.delete = AsyncMock()
     redis.rpush = AsyncMock()
     redis.publish = AsyncMock()
 
@@ -316,6 +345,8 @@ async def test_unexpected_restart_notifies_and_resumes(
     notifier.send = AsyncMock()
     redis = MagicMock()
     redis.set = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.delete = AsyncMock()
     redis.rpush = AsyncMock()
     redis.publish = AsyncMock()
 
@@ -337,8 +368,9 @@ async def test_unexpected_restart_notifies_and_resumes(
         assert updated.status == "failed"
         pending = await TaskRepository(check_db).list_pending(limit=10)
         assert len(pending) == 1
-        payload = json.loads(pending[0].payload or "{}")
-        assert payload.get("interrupt_recovery") is True
+    payload = json.loads(pending[0].payload or "{}")
+    assert payload.get("interrupt_recovery") is True
+    assert "do something" in payload.get("prompt", "")
     assert read_marker(deploy_settings) is None
 
 

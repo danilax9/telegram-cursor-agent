@@ -76,6 +76,14 @@ class UserRepository:
         await self._session.flush()
         return user
 
+    async def toggle_show_tool_calls_live(self, user_id: uuid.UUID) -> User | None:
+        user = await self.get_by_id(user_id)
+        if user is None:
+            return None
+        user.show_tool_calls_live = not user.show_tool_calls_live
+        await self._session.flush()
+        return user
+
     async def set_active_project(
         self, user_id: uuid.UUID, project_id: uuid.UUID | None
     ) -> User | None:

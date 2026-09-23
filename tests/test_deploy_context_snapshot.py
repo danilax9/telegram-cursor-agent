@@ -48,7 +48,7 @@ async def test_snapshot_running_agent_prompt(db_session, deploy_settings, tmp_pa
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
-    context = await snapshot_running_deploy_context(session_factory)
+    context = await snapshot_running_deploy_context(session_factory, deploy_settings)
 
     assert context is not None
     assert context.telegram_id == 4242

@@ -7,6 +7,7 @@ import pytest
 from telegram_cursor_agent.core.config import clear_settings_cache
 from telegram_cursor_agent.services.cursor_models import (
     CursorModelsError,
+    catalog_from_models_output,
     effective_projects_root,
     load_models,
     parse_models_output,
@@ -83,3 +84,9 @@ def test_refresh_roundtrip_writes_loadable_catalog(host_projects_settings) -> No
     models = parse_models_output("auto - Auto (default)\n")
     write_models_catalog(settings, models)
     assert load_models(settings) == models
+
+
+def test_catalog_from_models_output_rejects_empty(host_projects_settings) -> None:
+    settings, _workspace = host_projects_settings
+    with pytest.raises(CursorModelsError):
+        catalog_from_models_output(settings, "Available models\n\nTip: use --model\n")

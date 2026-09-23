@@ -25,6 +25,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     active_project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("projects.id"), nullable=True
     )
+    show_tool_calls_live: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
 
     projects: Mapped[list[Project]] = relationship(
         back_populates="owner",

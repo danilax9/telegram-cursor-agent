@@ -89,7 +89,8 @@ async def _reply_action_result(
             )
         return
     if result.result_type == ActionResultType.TASK_QUEUED:
-        await send_typing(message)
+        if result.typing_indicator:
+            await send_typing(message)
         return
     for chunk in split_telegram_message(result.message):
         await message.answer(chunk)

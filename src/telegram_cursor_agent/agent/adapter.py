@@ -6,8 +6,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from telegram_cursor_agent.agent.prompts import SELF_DEPLOY_RULE_CONTENT, TELEGRAM_RULE_CONTENT
-from telegram_cursor_agent.agent.stream_progress import StreamProgressHandler
+from telegram_cursor_agent.agent.prompts import (
+    MODERN_WEB_RULE_CONTENT,
+    SELF_DEPLOY_RULE_CONTENT,
+    TELEGRAM_RULE_CONTENT,
+)
+from telegram_cursor_agent.agent.skills import (
+    build_skills_routing_rule,
+    compose_task_prompt,
+)
+from telegram_cursor_agent.agent.stream_progress import (
+    StreamProgressHandler,
+    ToolAwareStreamProgressHandler,
+)
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.services.cursor_models import resolve_model_file
@@ -48,7 +59,7 @@ class CursorAgentAdapter:
         prompt: str,
         resume_chat_id: str | None = None,
     ) -> list[str]:
-        self._ensure_telegram_rules(workspace)
+        self._ensure_agent_rules(workspace)
         cmd = [
             self._settings.cursor_agent_bin,
             "--print",
@@ -71,7 +82,7 @@ class CursorAgentAdapter:
             cmd.extend(["--resume", resume_chat_id])
         if self._settings.cursor_approve_mcps:
             cmd.append("--approve-mcps")
-        cmd.append(prompt)
+        cmd.append(compose_task_prompt(self._settings, workspace, prompt))
         return cmd
 
     async def run_prompt(
@@ -82,10 +93,17 @@ class CursorAgentAdapter:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
         process_env: dict[str, str] | None = None,
+        *,
+        show_tool_calls_live: bool = False,
     ) -> AgentResult:
         progress_handler: StreamProgressHandler | None = None
         if on_progress is not None:
-            progress_handler = StreamProgressHandler(on_progress, self._event_text)
+            if show_tool_calls_live:
+                progress_handler = ToolAwareStreamProgressHandler(
+                    on_progress, self._event_text
+                )
+            else:
+                progress_handler = StreamProgressHandler(on_progress, self._event_text)
 
         async def handle_line(line: str) -> None:
             if progress_handler is None:
@@ -118,16 +136,32 @@ class CursorAgentAdapter:
             timed_out=result.timed_out,
         )
 
-    def _ensure_telegram_rules(self, workspace: str) -> None:
-        rules_root = self._settings.projects_root
-        if self._settings.sandbox_open and Path(workspace) == Path("/"):
-            rules_root = self._settings.projects_root
-
-        rules_dir = rules_root / ".cursor" / "rules"
-        rules_dir.mkdir(parents=True, exist_ok=True)
-        (rules_dir / "telegram-bot.mdc").write_text(TELEGRAM_RULE_CONTENT)
+    def _ensure_agent_rules(self, workspace: str) -> None:
+        """Sync Telegram + skills rules into every Cursor workspace root in use."""
+        routing = build_skills_routing_rule(self._settings, workspace)
+        rule_files: list[tuple[str, str]] = [
+            ("telegram-bot.mdc", TELEGRAM_RULE_CONTENT),
+            ("skills-routing.mdc", routing),
+            ("modern-web.mdc", MODERN_WEB_RULE_CONTENT),
+        ]
         if self._settings.self_deploy_enabled:
-            (rules_dir / "self-deploy.mdc").write_text(SELF_DEPLOY_RULE_CONTENT)
+            rule_files.append(("self-deploy.mdc", SELF_DEPLOY_RULE_CONTENT))
+
+        for rules_root in self._rule_sync_roots(workspace):
+            rules_dir = rules_root / ".cursor" / "rules"
+            rules_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in rule_files:
+                (rules_dir / filename).write_text(content, encoding="utf-8")
+
+    def _rule_sync_roots(self, workspace: str) -> set[Path]:
+        roots: set[Path] = {self._settings.projects_root.resolve()}
+        ws_text = (workspace or "").strip()
+        if ws_text:
+            try:
+                roots.add(Path(ws_text).expanduser().resolve())
+            except OSError:
+                pass
+        return roots
 
     @staticmethod
     def _parse_stream_line(line: str) -> dict[str, Any] | None:

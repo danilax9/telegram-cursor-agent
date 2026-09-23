@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from telegram_cursor_agent.core.config import Settings
@@ -28,6 +29,10 @@ def effective_projects_root(settings: Settings) -> Path:
 
 def models_catalog_path(settings: Settings) -> Path:
     return effective_projects_root(settings) / MODELS_FILENAME
+
+
+def models_catalog_is_present(settings: Settings) -> bool:
+    return models_catalog_path(settings).is_file()
 
 
 def model_selection_path(settings: Settings) -> Path:
@@ -106,3 +111,30 @@ def write_models_catalog(settings: Settings, models: list[dict[str, str]]) -> Pa
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(models, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def catalog_from_models_output(
+    settings: Settings, stdout: str
+) -> list[dict[str, str]]:
+    """Parse `cursor-agent models` output and persist the catalog."""
+    models = parse_models_output(stdout)
+    if not models:
+        raise CursorModelsError("cursor-agent models returned no entries")
+    write_models_catalog(settings, models)
+    return models
+
+
+def refresh_models_catalog(settings: Settings) -> list[dict[str, str]]:
+    """Fetch models from Cursor CLI and write `cursor-models.json`."""
+    try:
+        result = subprocess.run(
+            [settings.cursor_agent_bin, "models"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise CursorModelsError(
+            "Не удалось обновить каталог моделей через cursor-agent."
+        ) from exc
+    return catalog_from_models_output(settings, result.stdout)

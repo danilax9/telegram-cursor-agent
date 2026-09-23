@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -35,8 +36,24 @@ INTERRUPTED_RESUME_PROMPT = (
     "[System: The worker restarted while a previous turn was still running. "
     "Send the user a concise Telegram Markdown reply: acknowledge the restart briefly, "
     "finish any incomplete answer from the prior turn if still useful, and confirm "
-    "they can continue chatting normally.]"
+    "they can continue chatting normally. "
+    "Do not paste this system block to the user.]"
 )
+
+
+def build_interrupt_recovery_prompt(original_prompt: str | None) -> str:
+    """Resume the same Cursor chat and continue the user's interrupted task."""
+    user_part = (original_prompt or "").strip()
+    if user_part.startswith("[System:"):
+        user_part = ""
+    if not user_part:
+        return INTERRUPTED_RESUME_PROMPT
+    return (
+        f"{INTERRUPTED_RESUME_PROMPT}\n\n"
+        "Прерванная инструкция пользователя (продолжи с `--resume`, "
+        "контекст чата должен сохраниться):\n"
+        f"{user_part}"
+    )
 
 NO_SESSION_RECOVERY_MESSAGE = (
     "⚠️ Предыдущая задача прервалась при перезапуске. "
@@ -48,10 +65,12 @@ RECOVERY_EXHAUSTED_MESSAGE = (
     "Напиши сообщение заново — сессия сохранена, можно продолжать с того же места."
 )
 
-# Guards against a restart loop: each auto-resume carries its attempt number so a
-# resume that keeps getting interrupted eventually stops re-queueing itself.
+# Guards against a crash loop: a resume that dies on its own stops being
+# re-queued. A deliberate restart (systemctl, self-deploy) is not a crash and
+# must not spend this budget — a second deploy in one session is normal.
 RECOVERY_ATTEMPT_KEY = "recovery_attempt"
 MAX_RECOVERY_ATTEMPTS = 2
+CLEAN_SHUTDOWN_FILENAME = ".worker-clean-shutdown"
 
 
 @dataclass
@@ -95,6 +114,33 @@ class DeployMarker:
 
 def marker_path(settings: Settings) -> Path:
     return settings.self_repo_root / MARKER_FILENAME
+
+
+def clean_shutdown_path(settings: Settings) -> Path:
+    return settings.self_repo_root / CLEAN_SHUTDOWN_FILENAME
+
+
+def mark_clean_shutdown(settings: Settings) -> None:
+    """Record that this process is stopping on purpose (SIGTERM), not crashing."""
+    path = clean_shutdown_path(settings)
+    path.write_text(
+        json.dumps(
+            {"pid": os.getpid(), "at": datetime.now(UTC).isoformat()},
+            ensure_ascii=False,
+        )
+    )
+
+
+def consume_clean_shutdown(settings: Settings) -> bool:
+    """Return True once if the previous worker stopped on purpose."""
+    path = clean_shutdown_path(settings)
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def write_marker(settings: Settings, context: DeployContext, *, status: str = "started") -> Path:
@@ -150,7 +196,11 @@ def _marker_from_raw(raw: dict) -> DeployMarker:
 
 
 def should_recover_deploy(marker: DeployMarker) -> bool:
-    return marker.status in DEPLOY_RECOVERY_STATUSES or marker.deploy_notified
+    if marker.tasks_recovered:
+        return False
+    if marker.status in DEPLOY_RECOVERY_STATUSES:
+        return True
+    return marker.deploy_notified and marker.status == DEPLOY_PENDING_STATUS
 
 
 def store_recovery_state(
@@ -261,6 +311,38 @@ def update_marker_completed(settings: Settings) -> None:
     raw["status"] = "pending_resume"
     raw["completed_at"] = datetime.now(UTC).isoformat()
     raw.pop("deploy_log", None)
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+
+
+def update_marker_fields(
+    settings: Settings,
+    *,
+    cursor_chat_id: str | None = None,
+    session_id: str | None = None,
+    workspace: str | None = None,
+    task_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
+    """Merge fresh session fields into the deploy marker without resetting status."""
+    path = marker_path(settings)
+    if not path.is_file():
+        return
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw, dict) or raw.get("version") != MARKER_VERSION:
+        return
+    if cursor_chat_id:
+        raw["cursor_chat_id"] = cursor_chat_id
+    if session_id:
+        raw["session_id"] = session_id
+    if workspace:
+        raw["workspace"] = workspace
+    if task_id:
+        raw["task_id"] = task_id
+    if user_id:
+        raw["user_id"] = user_id
     path.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
 
 

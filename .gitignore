@@ -1,5 +1,6 @@
 .env
 .deploy-pending.json
+.worker-clean-shutdown
 data/uploads/*
 !data/uploads/.gitkeep
 __pycache__/

@@ -26,7 +26,7 @@ async def main() -> None:
 
     marker = read_marker(settings)
     if marker is None or marker.telegram_id is None:
-        context = await snapshot_running_deploy_context(session_factory)
+        context = await snapshot_running_deploy_context(session_factory, settings)
         if context is not None:
             ensure_marker(settings, context)
             marker = read_marker(settings)

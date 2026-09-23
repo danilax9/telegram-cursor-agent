@@ -19,6 +19,9 @@ from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import require_super_admin
 from telegram_cursor_agent.database.models.user import User
 from telegram_cursor_agent.database.repositories.task import TaskRepository
+from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
+from telegram_cursor_agent.telegram.menu_navigation import build_cursor_submenu_text
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
@@ -201,6 +204,18 @@ async def run_menu_action(
             text,
             reply_markup=session_delete_keyboard(sessions),
             back_to="menu:sub:sessions",
+        )
+
+    if action == "toggle_tool_calls":
+        users = UserRepository(db)
+        updated = await users.toggle_show_tool_calls_live(user.id)
+        if updated is not None:
+            user = updated
+        await db.commit()
+        return MenuActionResult(
+            build_cursor_submenu_text(settings),
+            reply_markup=cursor_submenu_keyboard(user.show_tool_calls_live),
+            back_to="menu:sub:cursor",
         )
 
     if action == "model":

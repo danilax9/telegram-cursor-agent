@@ -1,12 +1,14 @@
 """Cursor agent adapter tests."""
 
+from pathlib import Path
+
 from telegram_cursor_agent.agent.adapter import CursorAgentAdapter
 
 
 def test_build_command_basic(test_settings, runner) -> None:
     adapter = CursorAgentAdapter(test_settings, runner)
     cmd = adapter.build_command("/workspace/proj", "fix the bug")
-    assert cmd == [
+    assert cmd[:-1] == [
         test_settings.cursor_agent_bin,
         "--print",
         "--output-format",
@@ -19,8 +21,10 @@ def test_build_command_basic(test_settings, runner) -> None:
         "--sandbox",
         "disabled",
         "--approve-mcps",
-        "fix the bug",
     ]
+    assert cmd[-1].endswith("fix the bug")
+    assert "telegram-cursor-agent" in cmd[-1]
+    assert "~/.hermes/skills" in cmd[-1]
 
 
 def test_build_command_uses_model_from_projects_root(
@@ -34,12 +38,45 @@ def test_build_command_uses_model_from_projects_root(
     assert "gpt-5" in cmd
 
 
+def test_build_command_syncs_rules_to_workspace_and_projects_root(
+    test_settings, runner, tmp_path: Path
+) -> None:
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    workspace = tmp_path / "opt" / "my-app"
+    workspace.mkdir(parents=True)
+    settings = test_settings.model_copy(update={"projects_root": projects_root})
+    adapter = CursorAgentAdapter(settings, runner)
+    adapter.build_command(str(workspace), "hello")
+
+    for root in (projects_root, workspace):
+        rules_dir = root / ".cursor" / "rules"
+        assert (rules_dir / "telegram-bot.mdc").is_file()
+        assert (rules_dir / "skills-routing.mdc").is_file()
+        assert (rules_dir / "modern-web.mdc").is_file()
+        routing = (rules_dir / "skills-routing.mdc").read_text(encoding="utf-8")
+        assert "Mandatory routing" in routing
+
+
 def test_build_command_with_resume(test_settings, runner) -> None:
     adapter = CursorAgentAdapter(test_settings, runner)
     cmd = adapter.build_command("/workspace/proj", "continue", resume_chat_id="chat-abc")
     assert "--resume" in cmd
     assert "chat-abc" in cmd
-    assert cmd[-1] == "continue"
+    assert cmd[-1].endswith("continue")
+    assert "telegram-cursor-agent" in cmd[-1]
+
+
+def test_build_command_keeps_system_recovery_prompt(test_settings, runner) -> None:
+    adapter = CursorAgentAdapter(test_settings, runner)
+    raw = "[System: Self-deploy finished successfully.]"
+    cmd = adapter.build_command("/workspace/proj", raw)
+    assert cmd[-1] == raw
+
+
+def test_rule_sync_includes_filesystem_root(test_settings, runner) -> None:
+    adapter = CursorAgentAdapter(test_settings, runner)
+    assert Path("/") in adapter._rule_sync_roots("/")
 
 
 def test_parse_stream_output_uses_last_assistant(test_settings, runner) -> None:

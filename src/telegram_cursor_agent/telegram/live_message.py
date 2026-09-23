@@ -1,7 +1,12 @@
 """Single Telegram message updated in place for live agent progress."""
 
 from telegram_cursor_agent.core.config import Settings
-from telegram_cursor_agent.core.security import sanitize_for_telegram, split_telegram_message
+from telegram_cursor_agent.core.security import (
+    escape_telegram_markdown_v2,
+    sanitize_for_telegram,
+    sanitize_for_telegram_markdown_v2,
+    split_telegram_message,
+)
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 THINKING_STATUS_TEXT = "🧠 Думаю"
@@ -21,11 +26,17 @@ class LiveMessageNotifier:
     """Send once, then replace the same message on every progress update."""
 
     def __init__(
-        self, notifier: TelegramNotifier, settings: Settings, telegram_id: int
+        self,
+        notifier: TelegramNotifier,
+        settings: Settings,
+        telegram_id: int,
+        *,
+        tool_calls_in_live: bool = False,
     ) -> None:
         self._notifier = notifier
         self._settings = settings
         self._telegram_id = telegram_id
+        self._tool_calls_in_live = tool_calls_in_live
         self._message_id: int | None = None
         self._last_text: str | None = None
 
@@ -40,27 +51,52 @@ class LiveMessageNotifier:
         )
         await self._apply_live_text(safe_text)
 
-    async def update_status(self, text: str) -> None:
-        """Task-level status (redirect, resume) without the thought prefix."""
+    async def replace_display(self, text: str) -> None:
+        """Update live text as-is (already composed for display)."""
+        if self._tool_calls_in_live:
+            safe_text = sanitize_for_telegram_markdown_v2(
+                text.strip(),
+                self._settings.cursor_agent_max_output_bytes,
+            )
+            await self._apply_live_text(safe_text, markdown_v2=True)
+            return
         safe_text = sanitize_for_telegram(
             text.strip(),
             self._settings.cursor_agent_max_output_bytes,
         )
         await self._apply_live_text(safe_text)
 
-    async def _apply_live_text(self, safe_text: str) -> None:
+    async def update_status(self, text: str) -> None:
+        """Task-level status (redirect, resume) without the thought prefix."""
+        if self._tool_calls_in_live:
+            safe_text = sanitize_for_telegram_markdown_v2(
+                escape_telegram_markdown_v2(text.strip()),
+                self._settings.cursor_agent_max_output_bytes,
+            )
+            await self._apply_live_text(safe_text, markdown_v2=True)
+            return
+        safe_text = sanitize_for_telegram(
+            text.strip(),
+            self._settings.cursor_agent_max_output_bytes,
+        )
+        await self._apply_live_text(safe_text)
+
+    async def _apply_live_text(
+        self, safe_text: str, *, markdown_v2: bool = False
+    ) -> None:
         if not safe_text or safe_text == self._last_text:
             return
 
         self._last_text = safe_text
+        use_v2 = markdown_v2 or self._tool_calls_in_live
         if self._message_id is None:
             self._message_id = await self._notifier.send_live_start(
-                self._telegram_id, safe_text
+                self._telegram_id, safe_text, markdown_v2=use_v2
             )
             return
 
         await self._notifier.edit_live_message(
-            self._telegram_id, self._message_id, safe_text
+            self._telegram_id, self._message_id, safe_text, markdown_v2=use_v2
         )
 
     async def finalize(self, text: str) -> None:
