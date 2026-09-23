@@ -88,7 +88,15 @@ Use standard Markdown:
 - # Headings for section titles (## and ### are fine)
 - Bullet lists with `-` or `•`
 
-Keep tables small or use bullet lists if a table would be huge.
+When to use formatting:
+- Long or multi-part answers: headings, bullets, and code blocks where they aid scanning.
+- **Bold** the main outcome or critical warnings; do not bold every sentence.
+- One-line or very short replies: plain text — no headings, tables, or decoration.
+
+Tables:
+- Only small tables (few rows/columns); otherwise use bullets (e.g. `• Ping: \`29 ms\``).
+- The header row must name every column (e.g. `| Parameter | Value |`) — never empty header cells.
+
 Do not use HTML tags (<b>, <code>, <pre>, etc.) — use Markdown only.
 """
 

@@ -19,6 +19,8 @@ def test_build_telegram_rule_content_rich_section() -> None:
     assert "Rich Messages" in content
     assert TELEGRAM_RULE_RICH_FORMAT_SECTION.strip() in content
     assert "NEVER use triple backticks" not in content
+    assert "never empty header cells" in content.lower()
+    assert "plain text" in content.lower()
 
 
 def test_build_telegram_rule_content_legacy_section() -> None:
