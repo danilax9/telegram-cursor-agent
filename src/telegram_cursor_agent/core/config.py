@@ -266,6 +266,14 @@ class Settings(BaseSettings):
         default=8192,
         validation_alias=AliasChoices("USER_MEMORY_MAX_PROMPT_BYTES"),
     )
+    telegram_live_tool_debounce_seconds: float = Field(
+        default=0.4,
+        validation_alias=AliasChoices("TELEGRAM_LIVE_TOOL_DEBOUNCE_SECONDS"),
+    )
+    telegram_live_tool_expandable: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("TELEGRAM_LIVE_TOOL_EXPANDABLE"),
+    )
 
     @field_validator("telegram_message_format", mode="before")
     @classmethod
@@ -283,6 +291,7 @@ class Settings(BaseSettings):
         "self_deploy_enabled",
         "cursor_approve_mcps",
         "user_memory_enabled",
+        "telegram_live_tool_expandable",
         mode="before",
     )
     @classmethod
@@ -317,6 +326,17 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.strip():
             return int(value)
         return value
+
+    @field_validator("telegram_live_tool_debounce_seconds", mode="before")
+    @classmethod
+    def parse_live_tool_debounce(cls, value: object) -> object:
+        if isinstance(value, str):
+            parsed = float(value.strip()) if value.strip() else 0.0
+        elif isinstance(value, (int, float)):
+            parsed = float(value)
+        else:
+            return value
+        return max(0.0, parsed)
 
     @field_validator("admin_telegram_ids", mode="before")
     @classmethod

@@ -111,6 +111,7 @@ class CursorAgentAdapter:
                     on_progress,
                     self._event_text,
                     use_rich_tool_details=self._settings.telegram_uses_rich_messages,
+                    tool_expandable=self._settings.telegram_live_tool_expandable,
                 )
             else:
                 progress_handler = StreamProgressHandler(on_progress, self._event_text)

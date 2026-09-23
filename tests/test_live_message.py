@@ -105,6 +105,7 @@ async def test_live_tool_calls_use_rich_when_enabled(
 
     clear_settings_cache()
     monkeypatch.setenv("TELEGRAM_MESSAGE_FORMAT", "rich_markdown")
+    monkeypatch.setenv("TELEGRAM_LIVE_TOOL_DEBOUNCE_SECONDS", "0")
     clear_settings_cache()
     settings = Settings()
 

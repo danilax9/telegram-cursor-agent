@@ -1,5 +1,7 @@
 """Single Telegram message updated in place for live agent progress."""
 
+import asyncio
+
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import (
     escape_telegram_markdown_v2,
@@ -41,6 +43,8 @@ class LiveMessageNotifier:
         self._tool_calls_in_live = tool_calls_in_live
         self._message_id: int | None = None
         self._last_text: str | None = None
+        self._pending_display: str | None = None
+        self._debounce_task: asyncio.Task[None] | None = None
 
     @property
     def message_id(self) -> int | None:
@@ -55,23 +59,62 @@ class LiveMessageNotifier:
 
     async def replace_display(self, text: str) -> None:
         """Update live text as-is (already composed for display)."""
+        prepared = self._prepare_display_text(text)
+        if (
+            self._tool_calls_in_live
+            and self._settings.telegram_live_tool_debounce_seconds > 0
+        ):
+            self._pending_display = prepared
+            if self._debounce_task is None or self._debounce_task.done():
+                self._debounce_task = asyncio.create_task(self._flush_debounced_display())
+            return
+        await self._push_display_text(prepared)
+
+    def _prepare_display_text(self, text: str) -> str:
         if self._tool_calls_in_live:
             if self._settings.telegram_uses_rich_messages:
-                safe_text = sanitize_for_telegram_rich(
+                return sanitize_for_telegram_rich(
                     text.strip(), self._settings.cursor_agent_max_output_bytes
                 )
-                await self._apply_live_text(safe_text)
-                return
-            safe_text = sanitize_for_telegram_markdown_v2(
+            return sanitize_for_telegram_markdown_v2(
                 text.strip(),
                 self._settings.cursor_agent_max_output_bytes,
             )
-            await self._apply_live_text(safe_text, markdown_v2=True)
-            return
-        safe_text = sanitize_for_telegram(
+        return sanitize_for_telegram(
             text.strip(),
             self._settings.cursor_agent_max_output_bytes,
         )
+
+    async def _flush_debounced_display(self) -> None:
+        try:
+            await asyncio.sleep(self._settings.telegram_live_tool_debounce_seconds)
+            pending = self._pending_display
+            if pending is not None:
+                await self._push_display_text(pending)
+        except asyncio.CancelledError:
+            raise
+
+    async def flush_pending_display(self) -> None:
+        """Apply the latest debounced tool-call preview immediately."""
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+            try:
+                await self._debounce_task
+            except asyncio.CancelledError:
+                pass
+            self._debounce_task = None
+        pending = self._pending_display
+        if pending is not None:
+            await self._push_display_text(pending)
+            self._pending_display = None
+
+    async def _push_display_text(self, safe_text: str) -> None:
+        if self._tool_calls_in_live:
+            if self._settings.telegram_uses_rich_messages:
+                await self._apply_live_text(safe_text)
+                return
+            await self._apply_live_text(safe_text, markdown_v2=True)
+            return
         await self._apply_live_text(safe_text)
 
     async def update_status(self, text: str) -> None:

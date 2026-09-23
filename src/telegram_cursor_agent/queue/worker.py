@@ -772,6 +772,7 @@ class TaskWorker:
         files = attachments or []
         if live is not None and live.message_id is not None:
             try:
+                await live.flush_pending_display()
                 await live.finalize(text)
                 if files:
                     await self._send_attachments_safe(telegram_id, files)

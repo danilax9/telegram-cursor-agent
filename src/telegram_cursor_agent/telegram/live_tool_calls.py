@@ -35,8 +35,13 @@ def _escape_rich_html(text: str) -> str:
     )
 
 
-def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str:
-    """Rich Message HTML: planning line + expandable blockquote (newest tool on top)."""
+def compose_live_with_tool_details(
+    base_text: str,
+    tool_lines: list[str],
+    *,
+    expandable: bool = True,
+) -> str:
+    """Rich Message HTML: planning line + blockquote (newest tool on top)."""
     base = _escape_rich_html(base_text.strip())
     if not tool_lines:
         return base
@@ -45,12 +50,8 @@ def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str
         f"<code>{_escape_rich_html(line.strip().replace('`', chr(39)))}</code>"
         for line in newest_first
     )
-    return (
-        f"{base}\n\n"
-        f"<blockquote expandable>"
-        f"{tool_rows}"
-        f"</blockquote>"
-    )
+    tag = "blockquote expandable" if expandable else "blockquote"
+    return f"{base}\n\n<{tag}>{tool_rows}</blockquote>"
 
 
 class ToolCallLiveComposer:
@@ -61,10 +62,12 @@ class ToolCallLiveComposer:
         initial_base: str = THINKING_STATUS_TEXT,
         *,
         use_rich_details: bool = False,
+        tool_expandable: bool = True,
     ) -> None:
         self._base = initial_base.strip()
         self._tools: list[str] = []
         self._use_rich_details = use_rich_details
+        self._tool_expandable = tool_expandable
 
     def on_planning_step(self, step_text: str) -> str:
         self._base = format_progress_message(step_text)
@@ -81,7 +84,9 @@ class ToolCallLiveComposer:
 
     def _compose(self, base: str, tools: list[str]) -> str:
         if self._use_rich_details:
-            return compose_live_with_tool_details(base, tools)
+            return compose_live_with_tool_details(
+                base, tools, expandable=self._tool_expandable
+            )
         return compose_live_with_tool_quotes(base, tools)
 
     def display(self) -> str:
