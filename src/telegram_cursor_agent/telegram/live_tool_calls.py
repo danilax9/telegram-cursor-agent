@@ -12,7 +12,8 @@ from telegram_cursor_agent.telegram.live_message import (
 )
 
 LIVE_TOOL_CALLS_MAX = 30
-_RICH_DETAILS_MARKER = "# Details"
+_DETAILS_OPEN = "<details>"
+_DETAILS_CLOSE = "</details>"
 
 
 def _blockquote_line(line: str) -> str:
@@ -28,13 +29,21 @@ def compose_live_with_tool_quotes(base_text: str, tool_lines: list[str]) -> str:
     return f"{base}\n\n{quotes}"
 
 
+def _escape_rich_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _rich_tool_list_item(line: str) -> str:
-    safe = line.strip().replace("`", "'")
-    return f"- `{safe}`"
+    safe = _escape_rich_html(line.strip().replace("`", "'"))
+    return f"<li><code>{safe}</code></li>"
 
 
 def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str:
-    """Rich Message live card: planning line + collapsible Details with tool list."""
+    """Rich Message live card: planning line + HTML details (collapsible)."""
     base = base_text.strip()
     if not tool_lines:
         return base
@@ -43,10 +52,10 @@ def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str
     items = "\n".join(_rich_tool_list_item(line) for line in tool_lines)
     return (
         f"{base}\n\n"
-        f"{_RICH_DETAILS_MARKER}\n\n"
-        f" {summary}\n\n"
-        f"### Вызовы\n"
-        f"{items}"
+        f"{_DETAILS_OPEN}\n"
+        f"<summary>{_escape_rich_html(summary)}</summary>\n\n"
+        f"<ul>\n{items}\n</ul>\n"
+        f"{_DETAILS_CLOSE}"
     )
 
 

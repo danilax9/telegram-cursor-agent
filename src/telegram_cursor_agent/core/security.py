@@ -178,10 +178,10 @@ def strip_live_tool_quotes(display_text: str) -> str:
 
 def strip_live_tool_section(display_text: str) -> str:
     """Drop tool-call section from live preview (MarkdownV2 quotes or Rich Details)."""
-    marker = "# Details"
-    index = display_text.find(marker)
-    if index != -1:
-        return display_text[:index].strip()
+    for marker in ("<details>", "# Details"):
+        index = display_text.find(marker)
+        if index != -1:
+            return display_text[:index].strip()
     return strip_live_tool_quotes(display_text)
 
 

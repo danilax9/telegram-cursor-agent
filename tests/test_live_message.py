@@ -114,8 +114,8 @@ async def test_live_tool_calls_use_rich_when_enabled(
         notifier, settings, telegram_id=12345, tool_calls_in_live=True
     )
 
-    await live.replace_display("# Details\n\n tools")
+    await live.replace_display("<details><summary>x</summary></details>")
 
     notifier.send_live_start.assert_awaited_once_with(
-        12345, "# Details\n\n tools", markdown_v2=False, rich_markdown=True
+        12345, "<details><summary>x</summary></details>", markdown_v2=False, rich_markdown=True
     )
