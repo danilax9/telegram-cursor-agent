@@ -72,3 +72,26 @@ async def test_thinking_status_on_worker_start(live_notifier: LiveMessageNotifie
     live_notifier._notifier.edit_live_message.assert_awaited_once_with(  # type: ignore[attr-defined]
         12345, 42, "💬 Первый шаг", markdown_v2=False
     )
+
+
+async def test_finalize_rich_sends_final_message_without_edit(
+    test_settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from telegram_cursor_agent.core.config import Settings, clear_settings_cache
+
+    clear_settings_cache()
+    monkeypatch.setenv("TELEGRAM_MESSAGE_FORMAT", "rich_markdown")
+    clear_settings_cache()
+    settings = Settings()
+
+    notifier = MagicMock(spec=TelegramNotifier)
+    notifier.send_live_start = AsyncMock(return_value=42)
+    notifier.edit_live_message = AsyncMock()
+    notifier.send = AsyncMock()
+    live = LiveMessageNotifier(notifier, settings, telegram_id=12345)
+
+    await live.update("Промежуточный шаг")
+    await live.finalize("**Итог**")
+
+    notifier.send.assert_awaited_once_with(12345, "**Итог**")
+    notifier.edit_live_message.assert_not_awaited()

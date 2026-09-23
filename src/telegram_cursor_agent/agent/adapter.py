@@ -9,7 +9,7 @@ from typing import Any
 from telegram_cursor_agent.agent.prompts import (
     MODERN_WEB_RULE_CONTENT,
     SELF_DEPLOY_RULE_CONTENT,
-    TELEGRAM_RULE_CONTENT,
+    build_telegram_rule_content,
 )
 from telegram_cursor_agent.agent.skills import (
     build_skills_routing_rule,
@@ -139,8 +139,11 @@ class CursorAgentAdapter:
     def _ensure_agent_rules(self, workspace: str) -> None:
         """Sync Telegram + skills rules into every Cursor workspace root in use."""
         routing = build_skills_routing_rule(self._settings, workspace)
+        telegram_rule = build_telegram_rule_content(
+            rich_messages=self._settings.telegram_uses_rich_messages
+        )
         rule_files: list[tuple[str, str]] = [
-            ("telegram-bot.mdc", TELEGRAM_RULE_CONTENT),
+            ("telegram-bot.mdc", telegram_rule),
             ("skills-routing.mdc", routing),
             ("modern-web.mdc", MODERN_WEB_RULE_CONTENT),
         ]

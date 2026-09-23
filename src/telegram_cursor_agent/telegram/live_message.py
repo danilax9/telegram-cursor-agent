@@ -3,6 +3,7 @@
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import (
     escape_telegram_markdown_v2,
+    prepare_agent_reply_text,
     sanitize_for_telegram,
     sanitize_for_telegram_markdown_v2,
     split_telegram_message,
@@ -100,10 +101,12 @@ class LiveMessageNotifier:
         )
 
     async def finalize(self, text: str) -> None:
-        safe_text = sanitize_for_telegram(
-            text.strip(), self._settings.cursor_agent_max_output_bytes
-        )
+        safe_text = prepare_agent_reply_text(text.strip(), self._settings)
         if not safe_text:
+            return
+
+        if self._settings.telegram_uses_rich_messages:
+            await self._notifier.send(self._telegram_id, safe_text)
             return
 
         chunks = split_telegram_message(safe_text)

@@ -76,6 +76,65 @@ Formatting rules:
 
 """
 
+TELEGRAM_RULE_RICH_FORMAT_SECTION = """
+## Telegram output format (mandatory)
+
+Your reply is delivered through Telegram **Rich Messages** (Bot API markdown).
+
+Use standard Markdown:
+- **bold** and *italic*
+- `inline code` and fenced ``` code blocks ``` with optional language tags
+- [link text](https://example.com)
+- # Headings for section titles (## and ### are fine)
+- Bullet lists with `-` or `•`
+
+Keep tables small or use bullet lists if a table would be huge.
+Do not use HTML tags (<b>, <code>, <pre>, etc.) — use Markdown only.
+"""
+
+TELEGRAM_RULE_LEGACY_FORMAT_SECTION = """
+## Telegram output format (mandatory)
+
+Your reply is delivered through Telegram Markdown parse mode.
+
+Use:
+- *bold* for emphasis and section titles
+- _italic_ for secondary notes
+- `inline code` for commands, paths, file names, env vars
+- [link text](https://example.com) for links
+
+Formatting rules:
+- Single backticks ` are correct for inline code.
+- NEVER use triple backticks ``` — they do not render in this Telegram bot.
+  For multi-line command output put each line in its own `inline code`, or use plain text.
+- No # markdown headings — use *Section title* on its own line.
+- No markdown tables (no `| col |` rows) — Telegram does not render them.
+  Use one bullet per metric, e.g.:
+  *Speedtest*
+  • Ping: `55.5 ms`
+  • Download: `1065 Mbit/s` (~1 Gbit/s)
+  • Upload: `292 Mbit/s`
+- No HTML tags (<b>, <code>, <pre>, etc.).
+"""
+
+
+def build_telegram_rule_content(*, rich_messages: bool) -> str:
+    parts = TELEGRAM_RULE_CONTENT.split("---", 2)
+    if len(parts) >= 3:
+        frontmatter = f"---{parts[1]}---"
+        body = parts[2]
+    else:
+        frontmatter = ""
+        body = TELEGRAM_RULE_CONTENT
+    marker = "## Telegram output format (mandatory)"
+    prefix, _, _suffix = body.partition(marker)
+    format_section = (
+        TELEGRAM_RULE_RICH_FORMAT_SECTION
+        if rich_messages
+        else TELEGRAM_RULE_LEGACY_FORMAT_SECTION
+    )
+    return f"{frontmatter}\n\n{prefix.strip()}\n{format_section.strip()}\n\n"
+
 # Backward-compatible alias for tests and docs.
 SYSTEM_PROMPT = TELEGRAM_RULE_CONTENT.split("---", 2)[-1].strip()
 

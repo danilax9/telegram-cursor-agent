@@ -65,6 +65,7 @@ def test_cursor_login_task_notified_constant() -> None:
 @pytest.mark.asyncio
 async def test_queue_account_switch_creates_worker_task(test_settings) -> None:
     service = CursorAccountLoginService(test_settings, MagicMock(), MagicMock())
+    service._accounts.get_account = MagicMock(return_value=MagicMock(id="backup"))  # type: ignore[method-assign]
 
     db = MagicMock()
     db.commit = AsyncMock()

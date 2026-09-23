@@ -250,6 +250,21 @@ class Settings(BaseSettings):
         default="tca:worker:restart_pending",
         validation_alias=AliasChoices("DEPLOY_WORKER_RESTART_KEY"),
     )
+    telegram_message_format: str = Field(
+        default="rich_markdown",
+        validation_alias=AliasChoices("TELEGRAM_MESSAGE_FORMAT"),
+    )
+
+    @field_validator("telegram_message_format", mode="before")
+    @classmethod
+    def normalize_telegram_message_format(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @property
+    def telegram_uses_rich_messages(self) -> bool:
+        return self.telegram_message_format == "rich_markdown"
 
     @field_validator(
         "sandbox_open",

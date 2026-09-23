@@ -153,6 +153,19 @@ def sanitize_for_telegram(text: str, max_bytes: int) -> str:
     return truncate_output(cleaned, max_bytes)
 
 
+def sanitize_for_telegram_rich(text: str, max_bytes: int) -> str:
+    """Rich messages accept normal Markdown; only redact secrets and truncate."""
+    redacted = redact_secrets(text)
+    return truncate_output(redacted, max_bytes)
+
+
+def prepare_agent_reply_text(text: str, settings: Settings) -> str:
+    max_bytes = settings.cursor_agent_max_output_bytes
+    if settings.telegram_uses_rich_messages:
+        return sanitize_for_telegram_rich(text, max_bytes)
+    return sanitize_for_telegram(text, max_bytes)
+
+
 TELEGRAM_MESSAGE_MAX_CHARS = 4096
 
 

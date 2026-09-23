@@ -45,7 +45,9 @@ def test_build_command_syncs_rules_to_workspace_and_projects_root(
     projects_root.mkdir()
     workspace = tmp_path / "opt" / "my-app"
     workspace.mkdir(parents=True)
-    settings = test_settings.model_copy(update={"projects_root": projects_root})
+    settings = test_settings.model_copy(
+        update={"projects_root": projects_root, "telegram_message_format": "legacy"}
+    )
     adapter = CursorAgentAdapter(settings, runner)
     adapter.build_command(str(workspace), "hello")
 
@@ -56,6 +58,8 @@ def test_build_command_syncs_rules_to_workspace_and_projects_root(
         assert (rules_dir / "modern-web.mdc").is_file()
         routing = (rules_dir / "skills-routing.mdc").read_text(encoding="utf-8")
         assert "Mandatory routing" in routing
+        telegram = (rules_dir / "telegram-bot.mdc").read_text(encoding="utf-8")
+        assert "NEVER use triple backticks" in telegram
 
 
 def test_build_command_with_resume(test_settings, runner) -> None:

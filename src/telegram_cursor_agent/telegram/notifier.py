@@ -12,7 +12,7 @@ from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.logging import get_logger
 from telegram_cursor_agent.core.security import (
     TELEGRAM_MESSAGE_MAX_CHARS,
-    sanitize_for_telegram,
+    prepare_agent_reply_text,
     split_telegram_message,
     strip_live_tool_quotes,
 )
@@ -20,6 +20,7 @@ from telegram_cursor_agent.services.outbound_attachments import (
     OutboundAttachment,
     is_image_attachment,
 )
+from telegram_cursor_agent.telegram.message_delivery import send_agent_text
 
 logger = get_logger(__name__)
 
@@ -94,14 +95,7 @@ class TelegramNotifier:
         )
 
     async def send(self, telegram_id: int, text: str) -> None:
-        safe_text = sanitize_for_telegram(text, self._settings.cursor_agent_max_output_bytes)
-        for chunk in split_telegram_message(safe_text):
-            try:
-                await self._bot.send_message(telegram_id, chunk)
-            except TelegramBadRequest:
-                # Cursor occasionally emits invalid HTML despite its prompt.
-                # Deliver the content rather than failing the whole task.
-                await self._bot.send_message(telegram_id, chunk, parse_mode=None)
+        await send_agent_text(self._bot, telegram_id, text, self._settings)
 
     async def send_with_url_button(
         self,
@@ -114,21 +108,13 @@ class TelegramNotifier:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text=button_text, url=url)]]
         )
-        safe_text = sanitize_for_telegram(text, self._settings.cursor_agent_max_output_bytes)
-        for index, chunk in enumerate(split_telegram_message(safe_text)):
-            try:
-                await self._bot.send_message(
-                    telegram_id,
-                    chunk,
-                    reply_markup=keyboard if index == 0 else None,
-                )
-            except TelegramBadRequest:
-                await self._bot.send_message(
-                    telegram_id,
-                    chunk,
-                    reply_markup=keyboard if index == 0 else None,
-                    parse_mode=None,
-                )
+        await send_agent_text(
+            self._bot,
+            telegram_id,
+            text,
+            self._settings,
+            reply_markup=keyboard,
+        )
 
     async def send_live_start(
         self, telegram_id: int, text: str, *, markdown_v2: bool = False

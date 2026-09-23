@@ -249,7 +249,8 @@ async def test_timeout_is_reported_as_timeout_not_cancellation(
     )
     notifier = _mock_notifier()
     session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
-    worker = _make_worker(worker_settings, session_factory, notifier)
+    settings = worker_settings.model_copy(update={"telegram_message_format": "legacy"})
+    worker = _make_worker(settings, session_factory, notifier)
     worker._execute = AsyncMock(
         side_effect=AgentTimeoutError(1800, "переписал config.py")
     )
