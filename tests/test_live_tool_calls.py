@@ -32,11 +32,10 @@ def test_composer_resets_tools_on_new_step() -> None:
 
 def test_rich_details_block_instead_of_blockquote() -> None:
     text = compose_live_with_tool_details("💬 Шаг", ["🔧 Shell: ls"])
-    assert "<details>" in text
-    assert "<summary>" in text
+    assert "<blockquote expandable>" in text
     assert "🔧 Инструменты (1)" in text
     assert "Shell: ls" in text
-    assert "# Details" not in text
+    assert "<details>" not in text
     assert not text.startswith(">")
 
 
@@ -44,7 +43,7 @@ def test_rich_composer_uses_details_when_enabled() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT, use_rich_details=True)
     composer.on_tool_call("🔧 Shell: ls")
     display = composer.display()
-    assert "<details>" in display
+    assert "<blockquote expandable>" in display
     assert "\n\n>" not in display
 
 

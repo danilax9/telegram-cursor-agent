@@ -12,8 +12,8 @@ from telegram_cursor_agent.telegram.live_message import (
 )
 
 LIVE_TOOL_CALLS_MAX = 30
-_DETAILS_OPEN = "<details>"
-_DETAILS_CLOSE = "</details>"
+_BLOCKQUOTE_EXPANDABLE_OPEN = '<blockquote expandable>'
+_BLOCKQUOTE_CLOSE = "</blockquote>"
 
 
 def _blockquote_line(line: str) -> str:
@@ -43,7 +43,7 @@ def _rich_tool_list_item(line: str) -> str:
 
 
 def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str:
-    """Rich Message live card: planning line + HTML details (collapsible)."""
+    """Rich Message live card: planning line + expandable blockquote (collapsible quote)."""
     base = base_text.strip()
     if not tool_lines:
         return base
@@ -52,10 +52,10 @@ def compose_live_with_tool_details(base_text: str, tool_lines: list[str]) -> str
     items = "\n".join(_rich_tool_list_item(line) for line in tool_lines)
     return (
         f"{base}\n\n"
-        f"{_DETAILS_OPEN}\n"
-        f"<summary>{_escape_rich_html(summary)}</summary>\n\n"
+        f"{_BLOCKQUOTE_EXPANDABLE_OPEN}\n"
+        f"<strong>{_escape_rich_html(summary)}</strong>\n"
         f"<ul>\n{items}\n</ul>\n"
-        f"{_DETAILS_CLOSE}"
+        f"{_BLOCKQUOTE_CLOSE}"
     )
 
 
