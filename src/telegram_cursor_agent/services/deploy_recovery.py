@@ -26,6 +26,7 @@ from telegram_cursor_agent.services.deploy_resume import (
     DEPLOY_SUCCESS_MESSAGE,
     INTERRUPTED_RECOVERY_MESSAGE,
     MAX_RECOVERY_ATTEMPTS,
+    STUCK_TYPING_MESSAGE,
     NO_SESSION_RECOVERY_MESSAGE,
     RECOVERY_ATTEMPT_KEY,
     RECOVERY_EXHAUSTED_MESSAGE,
@@ -177,6 +178,7 @@ class DeployRecoveryService:
                     "Interrupted by service restart.",
                 )
                 if user is not None:
+                    await self._replace_stuck_live(task.session_id)
                     notifications.append(
                         {
                             "telegram_id": user.telegram_id,
@@ -456,6 +458,25 @@ class DeployRecoveryService:
             recovery_flag=recovery_flag,
             attempt=attempt,
         )
+
+    async def _replace_stuck_live(self, session_id: uuid.UUID | None) -> None:
+        """Replace a leftover typing/thinking bubble when the reply never left."""
+        if session_id is None or self._redis is None or self._notifier is None:
+            return
+        try:
+            ref = await SessionExecutionService(self._redis).get_live_message(session_id)
+        except Exception:
+            logger.exception("stuck_live_lookup_failed", session_id=str(session_id))
+            return
+        if ref is None:
+            return
+        telegram_id, message_id = ref
+        try:
+            await self._notifier.edit_live_message(
+                telegram_id, message_id, STUCK_TYPING_MESSAGE
+            )
+        except Exception:
+            logger.exception("stuck_live_edit_failed", telegram_id=telegram_id)
 
     async def _release_session_lease(self, session_id: uuid.UUID | None) -> None:
         """A restarted worker does not own turns whose process already died."""

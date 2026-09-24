@@ -47,7 +47,7 @@ class ToolAwareStreamProgressHandler(StreamProgressHandler):
         *,
         initial_status: str = THINKING_STATUS_TEXT,
         use_rich_tool_details: bool = False,
-        tool_expandable: bool = True,
+        tool_expandable: bool = False,
     ) -> None:
         super().__init__(on_progress, event_text)
         self._composer = ToolCallLiveComposer(

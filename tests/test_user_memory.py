@@ -7,9 +7,12 @@ import pytest
 from telegram_cursor_agent.agent.skills import compose_task_prompt
 from telegram_cursor_agent.services.user_memory import (
     append_memory_line,
+    detect_memory_changes,
     ensure_memory_files,
+    format_memory_change_notification,
     format_memory_status,
     load_memory_prompt_section,
+    snapshot_memory_contents,
     user_memory_dir,
 )
 
@@ -50,6 +53,41 @@ def test_append_memory_line(test_settings) -> None:
     assert "test fact" in text
 
 
-def test_format_memory_status(test_settings) -> None:
-    text = format_memory_status(test_settings, 999005)
+def test_format_memory_status_legacy_markdown(test_settings) -> None:
+    text, use_html = format_memory_status(
+        test_settings, 999005, rich_html=False
+    )
+    assert use_html is False
     assert "user.md" in text
+    assert "blockquote" not in text
+    assert "> " in text
+
+
+def test_format_memory_status_rich_html(test_settings) -> None:
+    tid = 999007
+    memory_dir = ensure_memory_files(test_settings, tid)
+    (memory_dir / "user.md").write_text(
+        "# User profile\n\n- Возраст: 23\n",
+        encoding="utf-8",
+    )
+    text, use_html = format_memory_status(test_settings, tid, rich_html=True)
+    assert use_html is True
+    assert "<blockquote expandable>" in text
+    assert "Возраст: 23" in text
+    assert "user.md" in text
+
+
+def test_detect_memory_changes(test_settings) -> None:
+    tid = 999006
+    before = snapshot_memory_contents(test_settings, tid)
+    path = user_memory_dir(test_settings, tid) / "user.md"
+    path.write_text(before["user.md"] + "\n- prefers Python\n", encoding="utf-8")
+    after = snapshot_memory_contents(test_settings, tid)
+    changes = detect_memory_changes(before, after)
+    assert len(changes) == 1
+    assert changes[0].name == "user.md"
+    msg = format_memory_change_notification(changes[0])
+    assert "🧠" in msg
+    assert "`user.md`" in msg
+    assert "> " in msg
+    assert "Python" in msg

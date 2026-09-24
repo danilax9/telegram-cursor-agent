@@ -9,9 +9,11 @@ from telegram_cursor_agent.core.security import (
 from telegram_cursor_agent.telegram.live_message import (
     THINKING_STATUS_TEXT,
     format_progress_message,
+    wrap_live_progress_markdown_v2,
+    wrap_live_progress_rich_html,
 )
 
-LIVE_TOOL_CALLS_MAX = 30
+LIVE_TOOL_CALLS_MAX = 8
 
 
 def _blockquote_line(line: str) -> str:
@@ -20,10 +22,10 @@ def _blockquote_line(line: str) -> str:
 
 def compose_live_with_tool_quotes(base_text: str, tool_lines: list[str]) -> str:
     """MarkdownV2 live card: base line + blockquoted tool steps."""
-    base = escape_telegram_markdown_v2(base_text.strip())
+    base = wrap_live_progress_markdown_v2(base_text)
     if not tool_lines:
         return base
-    quotes = "\n".join(_blockquote_line(line) for line in reversed(tool_lines))
+    quotes = "\n".join(_blockquote_line(line) for line in tool_lines)
     return f"{base}\n\n{quotes}"
 
 
@@ -39,16 +41,14 @@ def compose_live_with_tool_details(
     base_text: str,
     tool_lines: list[str],
     *,
-    expandable: bool = True,
+    expandable: bool = False,
 ) -> str:
-    """Rich Message HTML: planning line + blockquote (newest tool on top)."""
-    base = _escape_rich_html(base_text.strip())
+    """Rich Message HTML: planning line + blockquote (chronological, newest at bottom)."""
+    base = wrap_live_progress_rich_html(base_text)
     if not tool_lines:
         return base
-    newest_first = list(reversed(tool_lines))
     tool_rows = "<br>".join(
-        f"<code>{_escape_rich_html(line.strip().replace('`', chr(39)))}</code>"
-        for line in newest_first
+        _escape_rich_html(line.strip()) for line in tool_lines
     )
     tag = "blockquote expandable" if expandable else "blockquote"
     return f"{base}\n\n<{tag}>{tool_rows}</blockquote>"
@@ -62,7 +62,7 @@ class ToolCallLiveComposer:
         initial_base: str = THINKING_STATUS_TEXT,
         *,
         use_rich_details: bool = False,
-        tool_expandable: bool = True,
+        tool_expandable: bool = False,
     ) -> None:
         self._base = initial_base.strip()
         self._tools: list[str] = []
@@ -77,6 +77,8 @@ class ToolCallLiveComposer:
     def on_tool_call(self, summary: str) -> str:
         line = summary.strip()
         if line:
+            if self._tools and self._tools[-1] == line:
+                return self.display()
             self._tools.append(line)
             while len(self._tools) > LIVE_TOOL_CALLS_MAX:
                 self._tools.pop(0)

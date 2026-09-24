@@ -271,7 +271,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TELEGRAM_LIVE_TOOL_DEBOUNCE_SECONDS"),
     )
     telegram_live_tool_expandable: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("TELEGRAM_LIVE_TOOL_EXPANDABLE"),
     )
 

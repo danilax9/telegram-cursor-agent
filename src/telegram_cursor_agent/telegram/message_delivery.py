@@ -24,6 +24,7 @@ async def send_agent_text(
     settings: Settings,
     *,
     reply_markup: ReplyMarkupUnion | None = None,
+    rich_html: bool = False,
 ) -> None:
     """Send a user-facing agent reply with rich-message support and fallbacks."""
     safe = prepare_agent_reply_text(text, settings)
@@ -31,7 +32,9 @@ async def send_agent_text(
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == 0 else None
         if settings.telegram_uses_rich_messages:
-            if await _try_send_rich(bot, chat_id, chunk, reply_markup=markup):
+            if await _try_send_rich(
+                bot, chat_id, chunk, reply_markup=markup, html=rich_html
+            ):
                 continue
         await _send_legacy(bot, chat_id, chunk, reply_markup=markup)
 
@@ -42,11 +45,13 @@ async def _try_send_rich(
     text: str,
     *,
     reply_markup: ReplyMarkupUnion | None,
+    html: bool = False,
 ) -> bool:
+    payload = InputRichMessage(html=text) if html else InputRichMessage(markdown=text)
     try:
         await bot.send_rich_message(
             chat_id,
-            InputRichMessage(markdown=text),
+            payload,
             reply_markup=reply_markup,
         )
         return True

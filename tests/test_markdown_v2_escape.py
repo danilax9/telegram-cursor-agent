@@ -8,5 +8,5 @@ def test_escape_dots_in_paths() -> None:
 
 def test_blockquote_prefix_per_tool_line() -> None:
     text = compose_live_with_tool_quotes("🧠 Думаю", ["🔧 Shell: ls -la"])
-    assert text.startswith("🧠 Думаю")
+    assert text.startswith("_🧠 Думаю_")
     assert "\n\n>🔧 Shell: ls \\-la" in text or "\n\n>🔧 Shell: ls -la" in text

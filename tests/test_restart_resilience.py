@@ -10,16 +10,19 @@ from telegram_cursor_agent.database.repositories.session import SessionRepositor
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.services.deploy_recovery import DeployRecoveryService
+from telegram_cursor_agent.queue.worker import TaskWorker
 from telegram_cursor_agent.services.deploy_resume import (
     MAX_RECOVERY_ATTEMPTS,
     RECOVERY_ATTEMPT_KEY,
     RECOVERY_EXHAUSTED_MESSAGE,
+    STUCK_TYPING_MESSAGE,
     DeployContext,
     claim_marker_for_delivery,
     clean_shutdown_path,
     mark_clean_shutdown,
     marker_path,
     read_marker,
+    write_fix_request,
     write_marker,
 )
 
@@ -296,3 +299,61 @@ async def test_orphan_process_kill_is_guarded_against_pid_reuse(
     recovery._terminate_orphan_process(0)
     recovery._terminate_orphan_process(1)
     recovery._terminate_orphan_process(999_999_999)
+
+
+async def test_chaos_stuck_typing_then_rollback_report(
+    db_session, deploy_settings, tmp_path
+) -> None:
+    """Crash mid-typing, then a rollback must replace the bubble and queue a report."""
+    user, agent_session, task = await _running_agent_task(
+        db_session, tmp_path, telegram_id=7011
+    )
+    redis = _mock_redis()
+    redis.get = AsyncMock(
+        return_value=json.dumps(
+            {"telegram_id": user.telegram_id, "message_id": 77}
+        ).encode()
+    )
+    notifier = _mock_notifier()
+    notifier.edit_live_message = AsyncMock()
+    session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    recovery = DeployRecoveryService(
+        deploy_settings, session_factory, notifier=notifier, redis=redis
+    )
+    await recovery.recover_tasks_on_startup()
+
+    notifier.edit_live_message.assert_awaited()
+    assert notifier.edit_live_message.await_args.args[2] == STUCK_TYPING_MESSAGE
+
+    write_fix_request(
+        deploy_settings,
+        reason="RuntimeError: tca-guard-drill",
+        telegram_id=user.telegram_id,
+        user_id=str(user.id),
+        session_id=str(agent_session.id),
+        cursor_chat_id=agent_session.cursor_chat_id,
+        workspace=str(tmp_path),
+    )
+    queue = MagicMock()
+    queue.enqueue = AsyncMock()
+    worker = TaskWorker.__new__(TaskWorker)
+    worker._settings = deploy_settings
+    worker._queue = queue
+    worker._session_factory = session_factory
+    worker._notifier = notifier
+    worker._redis = redis
+    await worker._consume_fix_request()
+
+    queue.enqueue.assert_awaited_once()
+    async with session_factory() as check:
+        pending = await TaskRepository(check).list_pending(limit=10)
+        diagnosis = [
+            item
+            for item in pending
+            if item.id != task.id and "rollback_diagnosis" in (item.payload or "")
+        ]
+        assert len(diagnosis) == 1
+        payload = json.loads(diagnosis[0].payload or "{}")
+        assert payload["cursor_chat_id"] == agent_session.cursor_chat_id
+        assert "tca-guard-drill" in payload["prompt"]
+        assert payload.get("silent_recovery") is not True

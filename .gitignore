@@ -1,18 +1,35 @@
+# Secrets and local env
 .env
-.deploy-pending.json
-.worker-clean-shutdown
-data/uploads/*
-!data/uploads/.gitkeep
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
 dist/
 build/
+.venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Runtime data
+data/uploads/*
+!data/uploads/.gitkeep
 workspace/
 *.db
+*.log
+
+# Deploy / recovery (machine-local)
+.deploy-pending.json
+.deploy-pending.claimed.json
+.deploy-good/
+.deploy-guard.json
+.deploy-fix-request.json
+.deploy-fix-request.claimed.json
+.worker-clean-shutdown
+.worker-reload

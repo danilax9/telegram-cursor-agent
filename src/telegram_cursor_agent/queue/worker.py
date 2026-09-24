@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 
+from aiogram.types import ReplyMarkupUnion
+
 from telegram_cursor_agent.agent.adapter import AgentResult, CursorAgentAdapter
 from telegram_cursor_agent.agent.prompts import build_redirect_prompt
 from telegram_cursor_agent.core.config import get_settings
@@ -60,7 +62,9 @@ from telegram_cursor_agent.services.deploy_resume import (
     DEPLOY_SUCCESS_MESSAGE,
     SESSION_ACTIVE_STATUS,
     DeployContext,
+    build_rollback_diagnosis_prompt,
     claim_deploy_start_notification,
+    claim_fix_request,
     clear_marker,
     mark_clean_shutdown,
     read_marker,
@@ -70,15 +74,35 @@ from telegram_cursor_agent.services.deploy_resume import (
 )
 from telegram_cursor_agent.services.mcp_config import McpConfigService
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
+from telegram_cursor_agent.services.health import (
+    WORKER_COMPONENT,
+    is_transient_delivery_error,
+    record_error,
+    run_heartbeat,
+)
 from telegram_cursor_agent.services.outbound_attachments import (
     OutboundAttachment,
     extract_outbound_attachments,
     format_skipped_attachments,
 )
+from telegram_cursor_agent.services.runtime_revision import (
+    capture_loaded_revision,
+    reload_flag_path,
+    reexec_current_process,
+    revision_drifted,
+    should_reload_process,
+    source_revision,
+)
 from telegram_cursor_agent.services.session_execution import (
     SessionExecState,
     SessionExecutionService,
 )
+from telegram_cursor_agent.services.user_memory import (
+    detect_memory_changes,
+    format_memory_change_notification,
+    snapshot_memory_contents,
+)
+from telegram_cursor_agent.telegram.keyboards import memory_change_notify_keyboard
 from telegram_cursor_agent.telegram.live_message import (
     LiveMessageNotifier,
     THINKING_STATUS_TEXT,
@@ -119,14 +143,18 @@ class TaskWorker:
         self._last_watchdog_at = 0.0
         self._stop = asyncio.Event()
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._started_at = time.time()
 
     async def start(self) -> None:
         setup_logging(self._settings)
+        self._started_at = time.time()
+        capture_loaded_revision()
         self._redis = await create_redis(self._settings)
         self._redis_pubsub = await create_redis(self._settings)
         self._queue = TaskQueue(self._redis, pubsub_redis=self._redis_pubsub)
         await SessionExecutionService(self._redis).publish_owner()
         self._install_signal_handlers()
+        await self._ack_reload_already_loaded()
         recovery = DeployRecoveryService(
             self._settings,
             self._session_factory,
@@ -139,6 +167,7 @@ class TaskWorker:
         except Exception:
             # A recovery failure must never stop the worker from serving new tasks.
             logger.exception("startup_recovery_failed")
+        await self._consume_fix_request()
         await self._drain_orphan_redirects()
         await self._ensure_models_catalog()
         try:
@@ -152,6 +181,14 @@ class TaskWorker:
             logger.exception("accounts_auth_migration_failed")
         cancel_listener = asyncio.create_task(self._supervise_cancellations())
         redirect_listener = asyncio.create_task(self._supervise_session_redirects())
+        heartbeat = asyncio.create_task(
+            run_heartbeat(
+                self._redis,
+                WORKER_COMPONENT,
+                revision=source_revision(),
+                started_at=self._started_at,
+            )
+        )
 
         failures = 0
         try:
@@ -161,16 +198,21 @@ class TaskWorker:
                         await asyncio.sleep(1)
                         continue
                     task_id = await self._queue.dequeue(block_seconds=1)
+                    if await self._reload_due():
+                        if task_id:
+                            await self._queue.enqueue(task_id)
+                        await self._reexec_for_reload()
+                        return
                     if task_id:
                         await self._process_task(task_id)
                     else:
                         await self._recover_pending_tasks()
                         await self._watchdog_stuck_tasks()
                     failures = 0
-                    if await self._should_restart_after_deploy():
-                        break
-                except Exception:
+                except Exception as exc:
                     failures += 1
+                    if not is_transient_delivery_error(exc):
+                        await record_error(self._redis, WORKER_COMPONENT)
                     logger.exception("worker_loop_error", consecutive_failures=failures)
                     await asyncio.sleep(
                         min(2**failures, MAX_LOOP_BACKOFF_SECONDS)
@@ -178,7 +220,10 @@ class TaskWorker:
         finally:
             cancel_listener.cancel()
             redirect_listener.cancel()
-            await asyncio.gather(cancel_listener, redirect_listener, return_exceptions=True)
+            heartbeat.cancel()
+            await asyncio.gather(
+                cancel_listener, redirect_listener, heartbeat, return_exceptions=True
+            )
             await self._shutdown()
         logger.info("worker_restarting_after_deploy")
 
@@ -214,16 +259,42 @@ class TaskWorker:
             )
         return catalog_from_models_output(self._settings, result.stdout)
 
-    async def _should_restart_after_deploy(self) -> bool:
-        if self._redis is None:
-            return False
-        key = self._settings.deploy_worker_restart_key
-        pending = await self._redis.get(key)
-        if pending is None:
-            return False
-        await self._redis.delete(key)
-        await self._prepare_graceful_restart()
-        return True
+    async def _ack_reload_already_loaded(self) -> None:
+        """A fresh process already imported current sources; drop a stale request."""
+        flag = reload_flag_path(self._settings.self_repo_root)
+        if flag.is_file() and flag.stat().st_mtime <= self._started_at + 1:
+            flag.unlink(missing_ok=True)
+        if self._redis is not None:
+            await self._redis.delete(self._settings.deploy_worker_restart_key)
+
+    async def _reload_due(self) -> bool:
+        flag = reload_flag_path(self._settings.self_repo_root)
+        flag_mtime = flag.stat().st_mtime if flag.is_file() else None
+        redis_pending = False
+        if self._redis is not None:
+            pending = await self._redis.get(self._settings.deploy_worker_restart_key)
+            redis_pending = pending is not None
+        return should_reload_process(
+            drifted=revision_drifted(),
+            flag_mtime=flag_mtime,
+            started_at=self._started_at,
+            redis_pending=redis_pending,
+        )
+
+    async def _reexec_for_reload(self) -> None:
+        """Load the sources now on disk before the next task. No systemd gap."""
+        if self._redis is not None:
+            pending = await self._redis.get(self._settings.deploy_worker_restart_key)
+            if pending is not None:
+                await self._prepare_graceful_restart()
+            await self._redis.delete(self._settings.deploy_worker_restart_key)
+        flag = reload_flag_path(self._settings.self_repo_root)
+        flag.unlink(missing_ok=True)
+        logger.info("worker_reexec_for_reload")
+        await self._release_owned_sessions()
+        await self._shutdown()
+        await self._engine.dispose()
+        reexec_current_process()
 
     async def _prepare_graceful_restart(self) -> None:
         marker = read_marker(self._settings)
@@ -386,6 +457,61 @@ class TaskWorker:
         except Exception:
             logger.exception("clear_owner_failed")
 
+    async def _consume_fix_request(self) -> None:
+        """After a rollback, diagnose the same Cursor chat and deliver the report."""
+        request = claim_fix_request(self._settings)
+        if request is None or self._queue is None:
+            return
+        chat_id = str(request.get("cursor_chat_id") or "").strip()
+        user_raw = str(request.get("user_id") or "").strip()
+        if not chat_id or not user_raw:
+            logger.warning("rollback_diagnosis_missing_session")
+            return
+        try:
+            user_id = uuid.UUID(user_raw)
+        except ValueError:
+            logger.warning("rollback_diagnosis_bad_user")
+            return
+        session_raw = str(request.get("session_id") or "").strip()
+        session_id = None
+        if session_raw:
+            try:
+                session_id = uuid.UUID(session_raw)
+            except ValueError:
+                session_id = None
+        workspace = self._settings.normalize_cursor_workspace(
+            str(request.get("workspace") or self._settings.self_repo_root)
+        )
+        reason = str(request.get("reason") or "").strip()
+        telegram_raw = request.get("telegram_id")
+        if telegram_raw is not None:
+            detail = reason[:700] if reason else "бот не поднялся после обновления"
+            await self._notify_safe(
+                int(telegram_raw),
+                "⚠️ Откат прошёл, ответ тогда не дошёл.\n\n"
+                f"Что сломалось:\n{detail}\n\n"
+                "Дальше разбор этого диалога придёт отдельным сообщением.",
+            )
+        payload = json.dumps(
+            {
+                "prompt": build_rollback_diagnosis_prompt(str(request.get("reason") or "")),
+                "agent_workspace": workspace,
+                "cursor_chat_id": chat_id,
+                "rollback_diagnosis": True,
+            }
+        )
+        async with self._session_factory() as db:
+            task = await TaskRepository(db).create(
+                user_id=user_id,
+                task_type="agent_prompt",
+                payload=payload,
+                session_id=session_id,
+            )
+            await db.commit()
+            task_id = str(task.id)
+        await self._queue.enqueue(task_id)
+        logger.info("rollback_diagnosis_queued", task_id=task_id)
+
     async def _drain_orphan_redirects(self) -> None:
         """Turn redirects published while this process was down into tasks."""
         if self._redis is None:
@@ -456,9 +582,15 @@ class TaskWorker:
             }
             payload_json = json.dumps(payload, ensure_ascii=False)
             pending_tasks = await tasks.list_pending_agent_for_session(sid)
-            if pending_tasks:
-                primary = pending_tasks[0]
-                for extra in pending_tasks[1:]:
+            diagnosis = [
+                item
+                for item in pending_tasks
+                if "rollback_diagnosis" in (item.payload or "")
+            ]
+            normal = [item for item in pending_tasks if item not in diagnosis]
+            if normal:
+                primary = normal[0]
+                for extra in normal[1:]:
                     await tasks.mark_cancelled(extra.id)
                 await tasks.update_payload(primary.id, payload_json)
                 queued_id = str(primary.id)
@@ -498,7 +630,7 @@ class TaskWorker:
                 except Exception:
                     logger.exception("requeue_orphan_task_failed", task_id=task_id_str)
             return
-        task, telegram_id, show_tool_calls_live = claimed
+        task, telegram_id, show_tool_calls_live, memory_change_notify = claimed
         self._current_task_id = task_id_str
         if task.session_id is not None and task.task_type == "agent_prompt":
             self._session_task_map[str(task.session_id)] = task_id_str
@@ -510,7 +642,10 @@ class TaskWorker:
                 )
         try:
             await self._run_claimed_task(
-                task, telegram_id, show_tool_calls_live=show_tool_calls_live
+                task,
+                telegram_id,
+                show_tool_calls_live=show_tool_calls_live,
+                memory_change_notify=memory_change_notify,
             )
         except Exception as exc:
             # Safety net: whatever fails, the task never stays "running" in silence.
@@ -524,7 +659,7 @@ class TaskWorker:
 
     async def _claim_task(
         self, task_id: uuid.UUID
-    ) -> tuple[Task, int | None, bool] | None:
+    ) -> tuple[Task, int | None, bool, bool] | None:
         """Mark the task running in a short transaction and snapshot what we need."""
         async with self._session_factory() as db:
             tasks = TaskRepository(db)
@@ -537,8 +672,11 @@ class TaskWorker:
             show_tool_calls_live = (
                 bool(user.show_tool_calls_live) if user is not None else False
             )
+            memory_change_notify = (
+                bool(user.memory_change_notify) if user is not None else True
+            )
             await db.commit()
-        return task, telegram_id, show_tool_calls_live
+        return task, telegram_id, show_tool_calls_live, memory_change_notify
 
     async def _run_claimed_task(
         self,
@@ -546,6 +684,7 @@ class TaskWorker:
         telegram_id: int | None,
         *,
         show_tool_calls_live: bool = False,
+        memory_change_notify: bool = True,
     ) -> None:
         task_id = task.id
         task_id_str = str(task_id)
@@ -586,6 +725,7 @@ class TaskWorker:
             if typing_task is not None and telegram_id is not None:
                 await self._notifier.send_typing_once(telegram_id)
 
+        memory_before: dict[str, str] | None = None
         try:
             if (
                 telegram_id is not None
@@ -613,6 +753,15 @@ class TaskWorker:
                 )
 
             live_ref_persisted = False
+            if (
+                telegram_id is not None
+                and self._settings.user_memory_enabled
+                and task.task_type == "agent_prompt"
+                and not is_system_recovery
+            ):
+                memory_before = snapshot_memory_contents(
+                    self._settings, telegram_id
+                )
 
             async def _maybe_persist_live_ref() -> None:
                 nonlocal live_ref_persisted
@@ -703,6 +852,17 @@ class TaskWorker:
                     live, telegram_id, user_message, attachments=attachments
                 )
         finally:
+            if (
+                memory_before is not None
+                and telegram_id is not None
+                and not silent_recovery
+                and task.task_type == "agent_prompt"
+            ):
+                await self._notify_memory_file_changes(
+                    telegram_id,
+                    memory_before,
+                    notify_enabled=memory_change_notify,
+                )
             await stop_typing()
 
     def _clear_session_marker(self, task: Task, is_system_recovery: bool) -> None:
@@ -751,15 +911,47 @@ class TaskWorker:
         self, task_id: uuid.UUID, telegram_id: int | None, exc: BaseException
     ) -> None:
         await self._persist_status(task_id, lambda repo: repo.mark_failed(task_id, str(exc)))
-        await self._notify_safe(telegram_id, f"Cursor завершился с ошибкой:\n{exc}")
+        detail = f"{type(exc).__name__}: {exc}"
+        if len(detail) > 500:
+            detail = detail[:500] + "…"
+        await self._notify_safe(
+            telegram_id,
+            "⚠️ Задача прервалась из‑за ошибки. Сессия сохранена — можно написать ещё раз.\n"
+            f"{detail}",
+        )
 
-    async def _notify_safe(self, telegram_id: int | None, text: str) -> None:
+    async def _notify_safe(
+        self,
+        telegram_id: int | None,
+        text: str,
+        *,
+        reply_markup: ReplyMarkupUnion | None = None,
+    ) -> None:
         if telegram_id is None:
             return
         try:
-            await self._notifier.send(telegram_id, text)
-        except Exception:
+            await self._notifier.send(telegram_id, text, reply_markup=reply_markup)
+        except Exception as exc:
+            if not is_transient_delivery_error(exc):
+                await record_error(self._redis, WORKER_COMPONENT)
             logger.exception("notify_failed", telegram_id=telegram_id)
+
+    async def _notify_memory_file_changes(
+        self,
+        telegram_id: int,
+        memory_before: dict[str, str],
+        *,
+        notify_enabled: bool = True,
+    ) -> None:
+        if not notify_enabled:
+            return
+        memory_after = snapshot_memory_contents(self._settings, telegram_id)
+        for change in detect_memory_changes(memory_before, memory_after):
+            await self._notify_safe(
+                telegram_id,
+                format_memory_change_notification(change),
+                reply_markup=memory_change_notify_keyboard(enabled=True),
+            )
 
     async def _deliver_result(
         self,

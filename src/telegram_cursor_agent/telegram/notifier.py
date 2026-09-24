@@ -7,6 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import ReplyMarkupUnion
 
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.logging import get_logger
@@ -150,8 +151,16 @@ class TelegramNotifier:
             default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
         )
 
-    async def send(self, telegram_id: int, text: str) -> None:
-        await send_agent_text(self._bot, telegram_id, text, self._settings)
+    async def send(
+        self,
+        telegram_id: int,
+        text: str,
+        *,
+        reply_markup: ReplyMarkupUnion | None = None,
+    ) -> None:
+        await send_agent_text(
+            self._bot, telegram_id, text, self._settings, reply_markup=reply_markup
+        )
 
     async def send_with_url_button(
         self,
@@ -233,6 +242,19 @@ class TelegramNotifier:
                     return message.message_id
             message = await self._bot.send_message(telegram_id, text, parse_mode=None)
         return message.message_id
+
+    async def delete_message(self, telegram_id: int, message_id: int) -> None:
+        try:
+            await self._bot.delete_message(telegram_id, message_id)
+        except TelegramBadRequest as exc:
+            if "message to delete not found" in str(exc).lower():
+                return
+            logger.warning(
+                "telegram_delete_failed",
+                chat_id=telegram_id,
+                message_id=message_id,
+                error=str(exc),
+            )
 
     async def edit_live_message(
         self,

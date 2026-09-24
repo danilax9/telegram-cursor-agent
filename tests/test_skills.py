@@ -1,4 +1,4 @@
-"""Cursor Agent Skills discovery and routing rules."""
+"""Cursor Agent Skills discovery and prompt composition."""
 
 from pathlib import Path
 
@@ -8,7 +8,6 @@ from telegram_cursor_agent.agent.skills import (
     compose_task_prompt,
     discover_cursor_skills,
     format_skills_index,
-    select_skills_for_prompt,
 )
 from telegram_cursor_agent.core.config import Settings, default_cursor_skills_dirs
 
@@ -70,6 +69,7 @@ def test_build_skills_routing_includes_index(
     assert "**alpha**" in rule
     assert "Alpha skill" in rule
     assert "Mandatory routing" in rule
+    assert "does **not** auto-select" in rule
     assert "skills-cursor" in rule
     assert format_skills_index([])
 
@@ -112,83 +112,36 @@ def test_discover_skips_hermes_and_keeps_symlink_path(
     assert "cache" not in str(found[0].skill_md)
 
 
-def test_select_landing_and_ignore_file_format(tmp_path: Path) -> None:
-    landing = CursorSkill(
-        name="web-landing-pages",
-        description="Landing pages.",
-        skill_md=tmp_path / "web-landing-pages" / "SKILL.md",
-        scope="user",
-    )
-    forms = CursorSkill(
-        name="forms-inputs-checkout",
-        description="Checkout forms.",
-        skill_md=tmp_path / "forms" / "SKILL.md",
-        scope="user",
-    )
-    selected = select_skills_for_prompt([landing, forms], "сделай лендинг для кафе")
-    assert [skill.name for skill in selected] == ["web-landing-pages"]
-    assert select_skills_for_prompt([forms], "поменяй формат файла") == []
-
-
-def test_description_overlap_selects_skill_without_route() -> None:
-    skill = CursorSkill(
-        name="billing-export",
-        description="Export invoices and payment receipts for accounting.",
-        skill_md=Path("/skills/billing-export/SKILL.md"),
-        scope="user",
-    )
-    found = select_skills_for_prompt([skill], "export invoices and receipts")
-    assert [item.name for item in found] == ["billing-export"]
-
-
-def test_compose_task_prompt_binds_identity_and_skills(
+def test_compose_task_prompt_agent_picks_skills_no_script_preselect(
     test_settings: Settings, tmp_path: Path
 ) -> None:
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "skill-manager", "# List skills only here\n")
     _write_skill(skills_root, "web-landing-pages", "# " + ("x" * 5000))
-    _write_skill(skills_root, "modern-web-design", "# modern\n")
-    _write_skill(skills_root, "frontend-design", "# frontend\n")
     settings = test_settings.model_copy(update={"cursor_skills_dirs": [skills_root]})
     workspace = str(tmp_path / "ws")
 
     landing = compose_task_prompt(settings, workspace, "сделай лендинг для кафе")
     assert "telegram-cursor-agent" in landing
     assert "~/.hermes/skills" in landing
-    assert "web-landing-pages" in landing
-    assert "modern-web-design" in landing
-    assert "frontend-design" in landing
+    assert "решает агент, не бот" in landing
+    assert "skills-routing.mdc" in landing
+    assert "Обязательные скиллы" not in landing
     assert "List skills only here" not in landing
     assert "xxxxx" not in landing
     assert landing.endswith("сделай лендинг для кафе")
 
     skills_question = compose_task_prompt(settings, workspace, "какие у тебя скиллы?")
     assert "skill-manager" in skills_question
-    assert "List skills only here" in skills_question
+    assert "List skills only here" not in skills_question
     assert skills_question.endswith("какие у тебя скиллы?")
 
     bugfix = compose_task_prompt(settings, workspace, "почини воркер")
-    assert "не выбран" in bugfix
+    assert "skills-routing.mdc" in bugfix
     assert bugfix.endswith("почини воркер")
 
     system = "[System: Self-deploy finished successfully.]"
     assert compose_task_prompt(settings, workspace, system) == system
-
-
-def test_inlined_skill_uses_absolute_skills_dir(
-    test_settings: Settings, tmp_path: Path
-) -> None:
-    skills_root = tmp_path / "skills"
-    _write_skill(
-        skills_root,
-        "skill-manager",
-        "bash ~/.cursor/skills/skill-manager/scripts/list-skills.sh\n",
-    )
-    settings = test_settings.model_copy(update={"cursor_skills_dirs": [skills_root]})
-    prompt = compose_task_prompt(settings, str(tmp_path), "какие у тебя скиллы?")
-    assert f"bash {skills_root}/skill-manager/scripts/list-skills.sh" in prompt
-    header = prompt.split("[User task]", 1)[0]
-    assert "~/.cursor/skills/" not in header
 
 
 def test_default_skills_dir_is_not_cursor_account_home(monkeypatch, tmp_path: Path) -> None:

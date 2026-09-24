@@ -1,5 +1,9 @@
 """System prompts and message templates."""
 
+from telegram_cursor_agent.services.user_memory import (
+    MEMORY_AGENT_RULE_MARKDOWN as USER_MEMORY_RULE_CONTENT,
+)
+
 TELEGRAM_RULE_CONTENT = """---
 description: Remote server agent via Telegram — identity, delivery, formatting
 alwaysApply: true
@@ -171,60 +175,8 @@ HELP_TEXT = """Available commands:
 • /mcp add `name` — find and install an MCP (or: добавь mcp github)
 • /access — list who can use the bot (owner only)
 • /access add `id` — grant access to another Telegram account (owner only)
-• /memory — файлы user.md / soul.md / memory.md (долгая память)
+• /memory — просмотр user.md / soul.md / memory.md (раскрывающиеся цитаты)
 • /start — initialize bot
-"""
-
-MODERN_WEB_RULE_CONTENT = """---
-description: Modern websites — design, UX, and frontend stack
-alwaysApply: false
-globs:
-  - "**/*.html"
-  - "**/*.css"
-  - "**/*.tsx"
-  - "**/*.jsx"
-  - "**/*.vue"
-  - "**/app/**"
-  - "**/pages/**"
-  - "**/components/**"
----
-
-When building or redesigning web UI, **read these Cursor Agent Skills** (full `SKILL.md` via Read tool) before coding:
-
-- `modern-web-design` — visual system, typography, anti-slop
-- `web-ux-a11y` — flows, forms, accessibility
-- `frontend-ui-stack` — React/Next, Tailwind, shadcn
-- `web-landing-pages` — marketing and landing structure
-
-If implementing from Figma, read `figma-design-to-code` and use Figma MCP (`get_design_context`).
-
-Deliver responsive, accessible, production-ready UI — not generic template layouts.
-"""
-
-USER_MEMORY_RULE_CONTENT = """---
-description: Persistent per-user memory files (user.md, soul.md, memory.md)
-alwaysApply: true
----
-
-## Persistent memory (per Telegram user)
-
-Each Telegram user has markdown files on the server. Paths appear in `[Persistent memory]` at the start of task prompts (when enabled).
-
-| File | Purpose |
-|------|---------|
-| `user.md` | Lasting preferences: language, timezone, stacks, default project |
-| `soul.md` | Optional tone/persona: verbosity, how to address the user |
-| `memory.md` | Dated facts and decisions («запомни …», «remember …») |
-
-When the user asks to remember something:
-1. **Append** a dated bullet to `memory.md` (format: `- YYYY-MM-DD: fact`).
-2. Move stable prefs into `user.md` instead of repeating them in `memory.md`.
-3. Keep entries short; dedupe obvious duplicates.
-4. **Never** store secrets (tokens, passwords, private keys).
-
-After updating memory files, briefly confirm what was saved (one line in the Telegram reply).
-
-The user can run `/memory` in the bot to see file locations.
 """
 
 SELF_DEPLOY_RULE_CONTENT = """---
@@ -244,6 +196,10 @@ When you change the telegram-cursor-agent bot code under the self repo root:
 4. Do not try to send the final success message before the process exits — after
    restart the worker auto-resumes this Cursor chat with a system message;
    use that turn to confirm success to the user.
+5. deploy-self.sh checks imports and tests before restart. If the new code
+   breaks startup, delivery, or heartbeats, a guard restores the last good
+   snapshot and resumes this chat with a failure report. Tell the user that
+   plainly. Do not deploy again until the failure is fixed and tests pass.
 
 You have access to the full server filesystem. The bot repo is at the self repo root
 from configuration (typically /root/telegram-cursor-agent). User projects live under

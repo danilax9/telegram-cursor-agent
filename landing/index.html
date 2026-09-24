@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Coreless Cursor — Cursor с доступом из Telegram</title>
+  <meta name="description" content="Открытый telegram-cursor-agent: задачи из Telegram, Cursor CLI на Linux, сессии и live-превью. Установка с GitHub.">
+  <meta property="og:title" content="Coreless Cursor">
+  <meta property="og:description" content="Telegram → серверный Cursor Agent.">
+  <meta name="theme-color" content="#09090b">
+  <link rel="icon" href="favicon.ico" sizes="256x256" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #09090b;
+      --surface: #111113;
+      --surface-2: #18181b;
+      --border: #27272a;
+      --text: #fafafa;
+      --muted: #a1a1aa;
+      --faint: #71717a;
+      --max: 1080px;
+      --font: "DM Sans", system-ui, sans-serif;
+      --mono: ui-monospace, "SF Mono", monospace;
+      --nav-h: 72px;
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    @keyframes drawer-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.65;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(113, 113, 122, 0.12), transparent 55%),
+        var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      height: var(--nav-h);
+      border-bottom: 1px solid var(--border);
+      background: rgba(9, 9, 11, 0.85);
+      backdrop-filter: blur(12px);
+    }
+    .site-header .wrap {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+    .brand {
+      text-decoration: none;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+    .brand__title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .brand__title span { color: var(--muted); font-weight: 500; }
+    .brand__sub {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--faint);
+    }
+    @media (max-width: 480px) { .brand__sub { display: none; } }
+
+    .nav {
+      display: none;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      gap: 24px;
+      margin-left: auto;
+    }
+    .nav a {
+      text-decoration: none;
+      font-size: 0.875rem;
+      color: var(--muted);
+      transition: color 0.15s;
+    }
+    .nav a:hover { color: var(--text); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      transition: background 0.25s var(--ease-out), border-color 0.25s var(--ease-out), transform 0.25s var(--ease-spring), box-shadow 0.25s var(--ease-out);
+    }
+    .btn:hover {
+      background: var(--surface-2);
+      border-color: #3f3f46;
+      transform: translateY(-1px);
+    }
+    .btn--solid {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    }
+    .btn--solid:hover {
+      background: #e4e4e7;
+      border-color: #e4e4e7;
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    }
+    .header-cta { display: none; }
+
+    .menu-btn {
+      margin-left: auto;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      cursor: pointer;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.25s var(--ease-out), border-color 0.25s var(--ease-out), transform 0.2s var(--ease-spring);
+    }
+    .menu-btn:hover {
+      background: var(--surface-2);
+      border-color: #3f3f46;
+    }
+    .menu-btn:active { transform: scale(0.96); }
+    .menu-btn__bars {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 5px;
+      width: 18px;
+      height: 14px;
+    }
+    .menu-btn__bars span {
+      display: block;
+      width: 100%;
+      height: 1.5px;
+      background: var(--text);
+      border-radius: 1px;
+      transform-origin: center;
+      transition: transform 0.35s var(--ease-spring), opacity 0.2s ease;
+    }
+    .menu-btn[aria-expanded="true"] .menu-btn__bars span:nth-child(1) {
+      transform: translateY(6.5px) rotate(45deg);
+    }
+    .menu-btn[aria-expanded="true"] .menu-btn__bars span:nth-child(2) {
+      opacity: 0;
+      transform: scaleX(0);
+    }
+    .menu-btn[aria-expanded="true"] .menu-btn__bars span:nth-child(3) {
+      transform: translateY(-6.5px) rotate(-45deg);
+    }
+    .menu-drawer {
+      display: none;
+      position: fixed;
+      inset: var(--nav-h) 0 0 0;
+      background: rgba(9, 9, 11, 0.96);
+      backdrop-filter: blur(16px);
+      border-top: 1px solid var(--border);
+      padding: 20px 28px;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 40;
+    }
+    .menu-drawer.open {
+      display: flex;
+      animation: drawer-in 0.35s var(--ease-spring) both;
+    }
+    .menu-drawer a {
+      text-decoration: none;
+      padding: 14px 0;
+      font-size: 1rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    @media (min-width: 768px) {
+      .nav { display: flex; }
+      .header-cta { display: inline-flex; margin-left: 16px; }
+      .menu-btn { display: none; }
+    }
+
+    .hero {
+      padding: 72px 0 96px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+    .hero__layout {
+      display: grid;
+      gap: 56px;
+      align-items: start;
+    }
+    @media (min-width: 900px) {
+      .hero__layout {
+        grid-template-columns: 1fr 400px;
+        gap: 80px;
+        align-items: center;
+      }
+    }
+    .hero__copy h1 {
+      font-size: clamp(2rem, 5vw, 3.25rem);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+      font-weight: 700;
+      margin: 0 0 20px;
+      animation: rise 0.75s var(--ease-out) 0.05s both;
+    }
+    .hero__desc {
+      margin: 0 0 32px;
+      color: var(--muted);
+      font-size: 1.125rem;
+      line-height: 1.7;
+      max-width: 38ch;
+      animation: rise 0.75s var(--ease-out) 0.12s both;
+    }
+    .hero__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      animation: rise 0.75s var(--ease-out) 0.2s both;
+    }
+
+    .preview {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      overflow: hidden;
+      box-shadow: 0 32px 64px rgba(0, 0, 0, 0.45);
+      animation: rise 0.9s var(--ease-out) 0.18s both, float 7s ease-in-out 1.2s infinite;
+    }
+    .preview__head {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--faint);
+      font-family: var(--mono);
+    }
+    .preview__body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 240px;
+    }
+    .msg {
+      max-width: 88%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 0.8125rem;
+      line-height: 1.45;
+    }
+    .msg--out {
+      align-self: flex-end;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+    }
+    .msg--in {
+      align-self: flex-start;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .msg--log {
+      align-self: stretch;
+      font-family: var(--mono);
+      font-size: 0.6875rem;
+      color: var(--faint);
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+    }
+
+    .section {
+      padding: 80px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .section:last-of-type { border-bottom: none; }
+    .section__intro {
+      max-width: 520px;
+      margin-bottom: 32px;
+    }
+    .section__intro h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 10px;
+    }
+    .section__intro p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .feat-grid {
+      display: grid;
+      gap: 16px;
+    }
+    @media (min-width: 640px) {
+      .feat-grid { grid-template-columns: repeat(2, 1fr); gap: 20px; }
+    }
+    @media (min-width: 960px) {
+      .feat-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .feat-card {
+      padding: 22px 22px 24px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      transition: border-color 0.25s var(--ease-out), transform 0.35s var(--ease-spring), box-shadow 0.35s var(--ease-out);
+    }
+    .feat-card:hover {
+      border-color: #3f3f46;
+      transform: translateY(-2px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+    }
+    .feat-card__icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      margin-bottom: 16px;
+      border-radius: 11px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+    }
+    .feat-card__icon svg {
+      width: 22px;
+      height: 22px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.75;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .feat-card h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .feat-card p {
+      margin: 0;
+      font-size: 0.875rem;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+    .feat-card p code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      color: var(--text);
+    }
+
+    .flow {
+      display: grid;
+      gap: 24px;
+    }
+    @media (min-width: 768px) {
+      .flow { grid-template-columns: repeat(3, 1fr); gap: 32px; }
+    }
+    .flow-item {
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .flow-item__n {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--faint);
+      margin-bottom: 12px;
+    }
+    .flow-item h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .flow-item p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+
+    .install-block {
+      max-width: 640px;
+    }
+    .code-wrap {
+      position: relative;
+      margin-bottom: 16px;
+    }
+    .code-wrap pre {
+      margin: 0;
+      padding: 16px 48px 16px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      line-height: 1.55;
+      color: #d4d4d8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .code-copy {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+    .code-copy:hover { color: var(--text); border-color: #52525b; }
+    .code-copy.is-copied {
+      color: var(--text);
+      border-color: #52525b;
+    }
+    .code-copy svg {
+      width: 17px;
+      height: 17px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.75;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .code-copy__icon--done { display: none; }
+    .code-copy.is-copied .code-copy__icon--copy { display: none; }
+    .code-copy.is-copied .code-copy__icon--done { display: block; }
+    .install__hint {
+      font-size: 0.8125rem;
+      color: var(--faint);
+      margin: 12px 0 0;
+      line-height: 1.5;
+    }
+    .install__hint code {
+      font-family: var(--mono);
+      font-size: 0.8em;
+      color: var(--text);
+    }
+
+    .faq-list {
+      border-top: 1px solid var(--border);
+    }
+    .faq-list details {
+      border-bottom: 1px solid var(--border);
+    }
+    .faq-list details:last-child { border-bottom: none; }
+    .faq-list summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 18px 20px;
+      font-weight: 600;
+      font-size: 0.9375rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .faq-list summary::-webkit-details-marker { display: none; }
+    .faq-list summary::after {
+      content: "+";
+      color: var(--faint);
+      font-weight: 400;
+    }
+    .faq-list details[open] summary::after { content: "−"; }
+    .faq-list p {
+      margin: 0;
+      padding: 0 20px 18px;
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.7s var(--ease-out), transform 0.7s var(--ease-out);
+    }
+    .reveal.is-visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    .cta {
+      padding: 88px 0 96px;
+      text-align: center;
+    }
+    .cta__line {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 0.9375rem;
+    }
+    .cta h2 {
+      font-size: 1.375rem;
+      margin: 0 0 8px;
+      letter-spacing: -0.02em;
+    }
+    .cta p {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 0.9375rem;
+    }
+
+    .site-footer {
+      padding: 24px;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.8125rem;
+      color: var(--faint);
+    }
+    .site-footer a {
+      color: var(--muted);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="#">
+        <span class="brand__title">Coreless <span>/ Cursor</span></span>
+        <span class="brand__sub">Telegram agent</span>
+      </a>
+      <ul class="nav">
+        <li><a href="#features">Возможности</a></li>
+        <li><a href="#start">Установка</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+      <a class="btn btn--solid header-cta" href="https://github.com/danilax9/telegram-cursor-agent">GitHub</a>
+      <button type="button" class="menu-btn" aria-label="Меню" aria-expanded="false" aria-controls="menu-drawer">
+        <span class="menu-btn__bars" aria-hidden="true"><span></span><span></span><span></span></span>
+      </button>
+    </div>
+  </header>
+  <nav id="menu-drawer" class="menu-drawer" aria-label="Мобильное меню">
+    <a href="#features">Возможности</a>
+    <a href="#start">Установка</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/danilax9/telegram-cursor-agent">GitHub</a>
+  </nav>
+
+  <section class="hero">
+    <div class="wrap hero__layout">
+      <div class="hero__copy">
+        <h1>Cursor с доступом из Telegram</h1>
+        <p class="hero__desc">Cursor Agent на вашем сервере: задачи из Telegram, правки в репозитории, shell и git.</p>
+        <div class="hero__actions">
+          <a class="btn btn--solid" href="https://github.com/danilax9/telegram-cursor-agent">GitHub</a>
+          <a class="btn" href="#start">Установка</a>
+        </div>
+      </div>
+      <aside class="preview" aria-label="Пример диалога">
+        <div class="preview__head">telegram-cursor-agent</div>
+        <div class="preview__body">
+          <div class="msg msg--out">После deploy воркер не поднимается</div>
+          <div class="msg msg--log">pytest · deploy-self.sh</div>
+          <div class="msg msg--in">Починил, worker снова в очереди.</div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="features" class="section reveal">
+    <div class="wrap">
+      <div class="section__intro">
+        <h2>Возможности</h2>
+        <p>Бот, worker, Cursor CLI — одним стеком на VPS.</p>
+      </div>
+      <div class="feat-grid">
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
+          </div>
+          <h3>Сессии</h3>
+          <p>Несколько контекстов: <code>/new</code>, <code>/resume</code></p>
+        </article>
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </div>
+          <h3>Live</h3>
+          <p>Статус и tool calls в чате, пока задача идёт</p>
+        </article>
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+          </div>
+          <h3>Память</h3>
+          <p>Долгие настройки в <code>user.md</code> и <code>memory.md</code></p>
+        </article>
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>
+          </div>
+          <h3>Skills</h3>
+          <p>Agent Skills — агент читает <code>SKILL.md</code> под задачу</p>
+        </article>
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <h3>Доступ</h3>
+          <p>Whitelist Telegram ID, отдельные workspace</p>
+        </article>
+        <article class="feat-card">
+          <div class="feat-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          </div>
+          <h3>Самообновление</h3>
+          <p>Из Telegram можно попросить обновить самого бота — агент правит свой код и выкатывает релиз на VPS.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="start" class="section reveal">
+    <div class="wrap">
+      <div class="section__intro">
+        <h2>Установка</h2>
+        <p>На Linux VPS — одна команда. Остальное в README на GitHub.</p>
+      </div>
+      <div class="install-block">
+        <div class="code-wrap">
+          <pre id="cmd-install">curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash</pre>
+          <button type="button" class="code-copy" data-copy="cmd-install" aria-label="Копировать команду">
+            <svg class="code-copy__icon code-copy__icon--copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <svg class="code-copy__icon code-copy__icon--done" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        </div>
+        <p class="install__hint">Скрипт спросит токен бота, ваш Telegram ID и вход в Cursor CLI.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="section reveal">
+    <div class="wrap">
+      <div class="section__intro">
+        <h2>FAQ</h2>
+      </div>
+      <div class="faq-list">
+        <details>
+          <summary>Это ChatGPT в Telegram?</summary>
+          <p>Нет. Cursor Agent с вашими проектами и shell на сервере.</p>
+        </details>
+        <details>
+          <summary>Нужен Cursor IDE на ноутбуке?</summary>
+          <p>Нет — CLI на сервере и Telegram достаточно.</p>
+        </details>
+        <details>
+          <summary>Где лежит код проектов?</summary>
+          <p>В <code>projects_root</code> на VPS, под вашим контролем.</p>
+        </details>
+        <details>
+          <summary>Доступ только для своих?</summary>
+          <p>Да: <code>/access</code> и <code>admin_telegram_ids</code> в конфиге.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap">
+      <p class="cta__line">Исходники, issues, полный README — на GitHub.</p>
+      <a class="btn btn--solid" href="https://github.com/danilax9/telegram-cursor-agent">Открыть репозиторий</a>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    cursor.coreless.site · <a href="https://github.com/danilax9/telegram-cursor-agent">telegram-cursor-agent</a>
+  </footer>
+
+  <script>
+    (function () {
+      var btn = document.querySelector(".menu-btn");
+      var drawer = document.getElementById("menu-drawer");
+      if (btn && drawer) {
+        btn.addEventListener("click", function () {
+          var open = btn.getAttribute("aria-expanded") === "true";
+          btn.setAttribute("aria-expanded", open ? "false" : "true");
+          drawer.classList.toggle("open", !open);
+        });
+        drawer.querySelectorAll("a").forEach(function (a) {
+          a.addEventListener("click", function () {
+            btn.setAttribute("aria-expanded", "false");
+            drawer.classList.remove("open");
+          });
+        });
+      }
+      if ("IntersectionObserver" in window) {
+        var io = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (e) {
+              if (e.isIntersecting) {
+                e.target.classList.add("is-visible");
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { rootMargin: "0px 0px -8% 0px", threshold: 0.08 }
+        );
+        document.querySelectorAll(".reveal").forEach(function (el) {
+          io.observe(el);
+        });
+      } else {
+        document.querySelectorAll(".reveal").forEach(function (el) {
+          el.classList.add("is-visible");
+        });
+      }
+
+      document.querySelectorAll(".code-copy").forEach(function (copyBtn) {
+        copyBtn.addEventListener("click", function () {
+          var id = copyBtn.getAttribute("data-copy");
+          var pre = id ? document.getElementById(id) : null;
+          if (!pre) return;
+          var text = pre.textContent || "";
+          function done() {
+            copyBtn.classList.add("is-copied");
+            copyBtn.setAttribute("aria-label", "Скопировано");
+            setTimeout(function () {
+              copyBtn.classList.remove("is-copied");
+              copyBtn.setAttribute("aria-label", "Копировать команду");
+            }, 1600);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {
+              fallbackCopy(text);
+              done();
+            });
+          } else {
+            fallbackCopy(text);
+            done();
+          }
+        });
+      });
+
+      function fallbackCopy(text) {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch (e) { /* ignore */ }
+        document.body.removeChild(ta);
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap installer — one-liner entry point.
+# Bootstrap installer. One command on a fresh server:
 #
 #   curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
 #

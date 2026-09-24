@@ -3,6 +3,7 @@
 import asyncio
 
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.core.logging import get_logger
 from telegram_cursor_agent.core.security import (
     escape_telegram_markdown_v2,
     prepare_agent_reply_text,
@@ -12,6 +13,8 @@ from telegram_cursor_agent.core.security import (
     split_telegram_message,
 )
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
+
+logger = get_logger(__name__)
 
 THINKING_STATUS_TEXT = "🧠 Думаю"
 _PROGRESS_PREFIX = "💬 "
@@ -24,6 +27,35 @@ def format_progress_message(text: str) -> str:
     if stripped.startswith("💬") or stripped.startswith("💭"):
         return stripped.replace("💭 ", "💬 ", 1) if stripped.startswith("💭") else stripped
     return f"{_PROGRESS_PREFIX}{stripped}"
+
+
+def escape_rich_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def wrap_live_progress_rich_html(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return f"<i>{escape_rich_html(stripped)}</i>"
+
+
+def wrap_live_progress_markdown_v2(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return f"_{escape_telegram_markdown_v2(stripped)}_"
+
+
+def wrap_live_progress_rich_markdown(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return f"*{stripped}*"
 
 
 class LiveMessageNotifier:
@@ -51,24 +83,27 @@ class LiveMessageNotifier:
         return self._message_id
 
     async def update(self, text: str) -> None:
-        safe_text = sanitize_for_telegram(
-            format_progress_message(text),
-            self._settings.cursor_agent_max_output_bytes,
-        )
-        await self._apply_live_text(safe_text)
+        try:
+            safe_text = self._prepare_intermediate_text(format_progress_message(text))
+            await self._apply_intermediate_text(safe_text)
+        except Exception:
+            logger.exception("live_progress_failed")
 
     async def replace_display(self, text: str) -> None:
         """Update live text as-is (already composed for display)."""
-        prepared = self._prepare_display_text(text)
-        if (
-            self._tool_calls_in_live
-            and self._settings.telegram_live_tool_debounce_seconds > 0
-        ):
-            self._pending_display = prepared
-            if self._debounce_task is None or self._debounce_task.done():
-                self._debounce_task = asyncio.create_task(self._flush_debounced_display())
-            return
-        await self._push_display_text(prepared)
+        try:
+            prepared = self._prepare_display_text(text)
+            if (
+                self._tool_calls_in_live
+                and self._settings.telegram_live_tool_debounce_seconds > 0
+            ):
+                self._pending_display = prepared
+                if self._debounce_task is None or self._debounce_task.done():
+                    self._debounce_task = asyncio.create_task(self._flush_debounced_display())
+                return
+            await self._push_display_text(prepared)
+        except Exception:
+            logger.exception("live_progress_failed")
 
     def _prepare_display_text(self, text: str) -> str:
         if self._tool_calls_in_live:
@@ -93,6 +128,8 @@ class LiveMessageNotifier:
                 await self._push_display_text(pending)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            logger.exception("live_progress_failed")
 
     async def flush_pending_display(self) -> None:
         """Apply the latest debounced tool-call preview immediately."""
@@ -119,24 +156,32 @@ class LiveMessageNotifier:
 
     async def update_status(self, text: str) -> None:
         """Task-level status (redirect, resume) without the thought prefix."""
-        if self._tool_calls_in_live:
-            if self._settings.telegram_uses_rich_messages:
-                safe_text = sanitize_for_telegram_rich(
-                    text.strip(), self._settings.cursor_agent_max_output_bytes
-                )
-                await self._apply_live_text(safe_text)
+        try:
+            safe_text = self._prepare_intermediate_text(text)
+            await self._apply_intermediate_text(safe_text)
+        except Exception:
+            logger.exception("live_status_failed")
+
+    def _prepare_intermediate_text(self, text: str) -> str:
+        stripped = text.strip()
+        max_bytes = self._settings.cursor_agent_max_output_bytes
+        if self._settings.telegram_uses_rich_messages:
+            if self._tool_calls_in_live:
+                wrapped = wrap_live_progress_rich_html(stripped)
+            else:
+                wrapped = wrap_live_progress_rich_markdown(stripped)
+            return sanitize_for_telegram_rich(wrapped, max_bytes)
+        wrapped = wrap_live_progress_markdown_v2(stripped)
+        return sanitize_for_telegram_markdown_v2(wrapped, max_bytes)
+
+    async def _apply_intermediate_text(self, safe_text: str) -> None:
+        if self._settings.telegram_uses_rich_messages:
+            if self._tool_calls_in_live:
+                await self._apply_live_text(safe_text, rich_html=True)
                 return
-            safe_text = sanitize_for_telegram_markdown_v2(
-                escape_telegram_markdown_v2(text.strip()),
-                self._settings.cursor_agent_max_output_bytes,
-            )
-            await self._apply_live_text(safe_text, markdown_v2=True)
+            await self._apply_live_text(safe_text, rich_markdown=True)
             return
-        safe_text = sanitize_for_telegram(
-            text.strip(),
-            self._settings.cursor_agent_max_output_bytes,
-        )
-        await self._apply_live_text(safe_text)
+        await self._apply_live_text(safe_text, markdown_v2=True)
 
     async def _apply_live_text(
         self,
@@ -144,6 +189,7 @@ class LiveMessageNotifier:
         *,
         markdown_v2: bool = False,
         rich_markdown: bool = False,
+        rich_html: bool = False,
     ) -> None:
         if not safe_text or safe_text == self._last_text:
             return
@@ -152,7 +198,7 @@ class LiveMessageNotifier:
         use_rich = rich_markdown or (
             self._tool_calls_in_live and self._settings.telegram_uses_rich_messages
         )
-        use_rich_html = (
+        use_rich_html = rich_html or (
             self._tool_calls_in_live and self._settings.telegram_uses_rich_messages
         )
         use_v2 = (
@@ -183,30 +229,20 @@ class LiveMessageNotifier:
         if not safe_text:
             return
 
-        chunks = split_telegram_message(safe_text)
-
-        if self._settings.telegram_uses_rich_messages:
-            if self._message_id is not None:
-                await self._notifier.edit_live_message(
-                    self._telegram_id,
-                    self._message_id,
-                    chunks[0],
-                    rich_markdown=True,
-                )
-                for chunk in chunks[1:]:
-                    await self._notifier.send(self._telegram_id, chunk)
-                return
-            for chunk in chunks:
-                await self._notifier.send(self._telegram_id, chunk)
-            return
-
-        if self._message_id is None:
-            for chunk in chunks:
-                await self._notifier.send(self._telegram_id, chunk)
-            return
-
-        await self._notifier.edit_live_message(
-            self._telegram_id, self._message_id, chunks[0]
-        )
-        for chunk in chunks[1:]:
+        for chunk in split_telegram_message(safe_text):
             await self._notifier.send(self._telegram_id, chunk)
+        await self._delete_progress_message()
+
+    async def _delete_progress_message(self) -> None:
+        if self._message_id is None:
+            return
+        message_id = self._message_id
+        self._message_id = None
+        try:
+            await self._notifier.delete_message(self._telegram_id, message_id)
+        except Exception:
+            logger.warning(
+                "live_progress_delete_failed",
+                telegram_id=self._telegram_id,
+                message_id=message_id,
+            )

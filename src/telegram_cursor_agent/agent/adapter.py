@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from telegram_cursor_agent.agent.prompts import (
-    MODERN_WEB_RULE_CONTENT,
     SELF_DEPLOY_RULE_CONTENT,
     USER_MEMORY_RULE_CONTENT,
     build_telegram_rule_content,
@@ -21,8 +20,11 @@ from telegram_cursor_agent.agent.stream_progress import (
     ToolAwareStreamProgressHandler,
 )
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.core.logging import get_logger
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.services.cursor_models import resolve_model_file
+
+logger = get_logger(__name__)
 
 _OUTPUT_SKIP_EVENT_TYPES = frozenset(
     {"user", "system", "thinking", "tool_call", "assistant"}
@@ -122,7 +124,10 @@ class CursorAgentAdapter:
             data = self._parse_stream_line(line)
             if data is None:
                 return
-            await progress_handler.handle(data)
+            try:
+                await progress_handler.handle(data)
+            except Exception:
+                logger.exception("stream_progress_failed")
 
         command = self.build_command(
             workspace, prompt, resume_chat_id, telegram_id=telegram_id
@@ -158,7 +163,6 @@ class CursorAgentAdapter:
         rule_files: list[tuple[str, str]] = [
             ("telegram-bot.mdc", telegram_rule),
             ("skills-routing.mdc", routing),
-            ("modern-web.mdc", MODERN_WEB_RULE_CONTENT),
         ]
         if self._settings.user_memory_enabled:
             rule_files.append(("user-memory.mdc", USER_MEMORY_RULE_CONTENT))
@@ -168,6 +172,9 @@ class CursorAgentAdapter:
         for rules_root in self._rule_sync_roots(workspace):
             rules_dir = rules_root / ".cursor" / "rules"
             rules_dir.mkdir(parents=True, exist_ok=True)
+            obsolete = rules_dir / "modern-web.mdc"
+            if obsolete.is_file():
+                obsolete.unlink()
             for filename, content in rule_files:
                 (rules_dir / filename).write_text(content, encoding="utf-8")
 

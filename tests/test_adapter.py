@@ -55,7 +55,7 @@ def test_build_command_syncs_rules_to_workspace_and_projects_root(
         rules_dir = root / ".cursor" / "rules"
         assert (rules_dir / "telegram-bot.mdc").is_file()
         assert (rules_dir / "skills-routing.mdc").is_file()
-        assert (rules_dir / "modern-web.mdc").is_file()
+        assert not (rules_dir / "modern-web.mdc").exists()
         routing = (rules_dir / "skills-routing.mdc").read_text(encoding="utf-8")
         assert "Mandatory routing" in routing
         telegram = (rules_dir / "telegram-bot.mdc").read_text(encoding="utf-8")

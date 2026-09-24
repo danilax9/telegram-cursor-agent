@@ -28,6 +28,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     show_tool_calls_live: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    memory_change_notify: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     projects: Mapped[list[Project]] = relationship(
         back_populates="owner",

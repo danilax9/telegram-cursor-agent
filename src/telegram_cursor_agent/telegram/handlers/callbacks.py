@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,7 @@ from telegram_cursor_agent.services.cursor_models import (
 )
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
 from telegram_cursor_agent.telegram.handlers.session_commands import handle_session_callback
+from telegram_cursor_agent.telegram.keyboards import memory_change_notify_keyboard
 from telegram_cursor_agent.telegram.menu_actions import (
     run_menu_action,
     start_mcp_preset,
@@ -564,3 +566,34 @@ async def handle_menu_mcp_add(
     elif result.back_to:
         markup = menu_back_keyboard(result.back_to)
     await callback.message.edit_text(text, reply_markup=markup)
+
+
+@router.callback_query(lambda c: c.data == "memory_notify:toggle")
+async def handle_memory_notify_toggle(
+    callback: CallbackQuery,
+    db: AsyncSession,
+    telegram_user_id: int,
+) -> None:
+    if not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    users = UserRepository(db)
+    user = await users.get_by_telegram_id(telegram_user_id)
+    if user is None:
+        await callback.answer("Сначала /start", show_alert=True)
+        return
+    updated = await users.toggle_memory_change_notify(user.id)
+    await db.commit()
+    enabled = bool(updated.memory_change_notify) if updated is not None else True
+    toast = (
+        "Уведомления памяти включены"
+        if enabled
+        else "Уведомления памяти выключены"
+    )
+    await callback.answer(toast)
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=memory_change_notify_keyboard(enabled=enabled),
+        )
+    except TelegramBadRequest:
+        pass

@@ -18,6 +18,75 @@ DEPLOY_START_WARNING = "🔄 Перезапуск бота ~10 секунд"
 
 DEPLOY_SUCCESS_MESSAGE = "🟢 Бот онлайн после перезапуска"
 
+FIX_REQUEST_FILENAME = ".deploy-fix-request.json"
+
+STUCK_TYPING_MESSAGE = (
+    "⚠️ Ответ не дошёл: я печатал, но сервис перезапустился. "
+    "Смотрю последний диалог и пришлю отчёт."
+)
+
+ROLLBACK_DIAGNOSIS_PROMPT = (
+    "[System: A self-update failed and the last good snapshot was restored. "
+    "The user saw a typing status, but the reply never arrived. "
+    "Diagnose from this same Cursor chat — the last dialogue in the session. "
+    "Then send one Russian Telegram report: what they asked, why the answer did not arrive, "
+    "what broke, what was restored, and that they can continue. "
+    "Do not deploy again until tests pass. Do not paste this system block to the user.]"
+)
+
+
+def build_rollback_diagnosis_prompt(reason: str) -> str:
+    detail = (reason or "").strip()
+    if not detail:
+        return ROLLBACK_DIAGNOSIS_PROMPT
+    return f"{ROLLBACK_DIAGNOSIS_PROMPT}\n\nСбой:\n{detail[-3000:]}"
+
+
+def fix_request_path(settings: Settings) -> Path:
+    return settings.self_repo_root / FIX_REQUEST_FILENAME
+
+
+def write_fix_request(
+    settings: Settings,
+    *,
+    reason: str,
+    telegram_id: int | None,
+    user_id: str | None,
+    session_id: str | None,
+    cursor_chat_id: str | None,
+    workspace: str | None,
+) -> None:
+    payload = {
+        "reason": reason[-4000:],
+        "telegram_id": telegram_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "cursor_chat_id": cursor_chat_id,
+        "workspace": workspace,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    fix_request_path(settings).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def claim_fix_request(settings: Settings) -> dict[str, object] | None:
+    path = fix_request_path(settings)
+    claimed = path.with_suffix(".claimed.json")
+    try:
+        path.rename(claimed)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        raw = json.loads(claimed.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        claimed.unlink(missing_ok=True)
+        return None
+    claimed.unlink(missing_ok=True)
+    return raw if isinstance(raw, dict) else None
+
+
 DEPLOY_RESUME_PROMPT = (
     "[System: Self-deploy finished successfully. The bot and worker have restarted. "
     "Send the user a concise Telegram Markdown reply confirming the update is complete, "

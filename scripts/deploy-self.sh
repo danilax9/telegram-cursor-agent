@@ -42,6 +42,12 @@ if [[ -f "${REPO_ROOT}/scripts/deploy-notify-start.py" ]]; then
   "$UV_BIN" run python "${REPO_ROOT}/scripts/deploy-notify-start.py" >>"$LOG_FILE" 2>&1 || true
 fi
 
+log "Preflight: import check and tests before restart..."
+if ! "$UV_BIN" run python "${REPO_ROOT}/scripts/tca_guard.py" preflight; then
+  log "Preflight failed. Rollback already handled by the guard."
+  exit 1
+fi
+
 log "Installing package..."
 "$UV_BIN" pip install -e .
 
@@ -88,6 +94,7 @@ else
   log "Could not clear worker ready key (non-fatal)."
 fi
 
+touch "$REPO_ROOT/.worker-reload"
 if redis_invoke SET "$WORKER_RESTART_KEY" 1 EX 600 >/dev/null 2>&1; then
   log "Scheduling graceful worker restart after current task..."
 else
@@ -217,3 +224,6 @@ PY
 fi
 
 log "Deploy complete. Worker restarts after the current task finishes."
+nohup "$UV_BIN" run python "${REPO_ROOT}/scripts/tca_guard.py" watch >>"$LOG_FILE" 2>&1 &
+disown || true
+log "Guard is watching heartbeats after restart."

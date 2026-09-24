@@ -27,6 +27,19 @@ def confirmation_keyboard(confirmation_id: UUID) -> InlineKeyboardMarkup:
     ]])
 
 
+def memory_change_notify_keyboard(*, enabled: bool) -> InlineKeyboardMarkup:
+    label = (
+        "🔕 Выключить уведомления"
+        if enabled
+        else "🔔 Включить уведомления"
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data="memory_notify:toggle")]
+        ]
+    )
+
+
 def model_keyboard(models: list[dict[str, str]], page: int = 0) -> InlineKeyboardMarkup:
     page_size = 8
     start = page * page_size

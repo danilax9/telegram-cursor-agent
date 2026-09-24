@@ -11,8 +11,10 @@ from telegram_cursor_agent.core.security import (
     sanitize_for_telegram,
     split_telegram_message,
 )
+from telegram_cursor_agent.telegram.message_delivery import send_agent_text
 from telegram_cursor_agent.services.user_memory import format_memory_status
 from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.telegram.keyboards import memory_change_notify_keyboard
 from redis.asyncio import Redis
 
 from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
@@ -130,10 +132,19 @@ async def cmd_limits(
 @router.message(Command("memory"))
 async def cmd_memory(
     message: Message,
+    db: AsyncSession,
     settings: Settings,
     telegram_user_id: int,
 ) -> None:
-    body = format_memory_status(settings, telegram_user_id)
-    text = prepare_agent_reply_text(body, settings)
-    for chunk in split_telegram_message(text):
-        await message.answer(chunk)
+    user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+    notify = bool(user.memory_change_notify) if user is not None else True
+    body, rich_html = format_memory_status(settings, telegram_user_id)
+    markup = memory_change_notify_keyboard(enabled=notify)
+    await send_agent_text(
+        message.bot,
+        message.chat.id,
+        body,
+        settings,
+        reply_markup=markup,
+        rich_html=rich_html,
+    )

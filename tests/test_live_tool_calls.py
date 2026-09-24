@@ -16,7 +16,8 @@ def test_composer_accumulates_tools_under_thinking() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
     composer.on_tool_call("🔧 Shell: ls")
     display = composer.display()
-    assert display.startswith(THINKING_STATUS_TEXT)
+    assert THINKING_STATUS_TEXT in display
+    assert display.lstrip().startswith("_")
     assert "\n\n>" in display
     assert "Shell: ls" in display
 
@@ -32,38 +33,51 @@ def test_composer_resets_tools_on_new_step() -> None:
 
 def test_rich_details_block_instead_of_blockquote() -> None:
     text = compose_live_with_tool_details("💬 Шаг", ["🔧 Shell: ls"])
-    assert "<blockquote expandable>" in text
+    assert "<blockquote>" in text
+    assert "expandable" not in text
     assert "Инструменты" not in text
     assert "Shell: ls" in text
-    assert not text.startswith(">")
+    assert "<i>" in text
+    assert "<code>" not in text
 
 
-def test_rich_tool_list_newest_first() -> None:
+def test_rich_tool_list_chronological_newest_at_bottom() -> None:
     text = compose_live_with_tool_details(
         "💬 Шаг",
         ["🔧 Shell: first", "🔧 Read: second", "🔧 Grep: third"],
     )
-    assert text.index("third") < text.index("second") < text.index("first")
+    assert text.index("first") < text.index("second") < text.index("third")
 
 
 def test_rich_composer_uses_details_when_enabled() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT, use_rich_details=True)
     composer.on_tool_call("🔧 Shell: ls")
     display = composer.display()
-    assert "<blockquote expandable>" in display
+    assert "<blockquote>" in display
+    assert "expandable" not in display
     assert "\n\n>" not in display
 
 
-def test_composer_keeps_at_most_thirty_tool_calls() -> None:
+def test_composer_keeps_at_most_eight_tool_calls() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
-    for index in range(31):
+    for index in range(9):
         composer.on_tool_call(f"🔧 Shell: cmd-{index}")
-    assert len(composer._tools) == 30
+    assert len(composer._tools) == 8
     assert composer._tools[0] == "🔧 Shell: cmd-1"
-    assert composer._tools[-1] == "🔧 Shell: cmd-30"
+    assert composer._tools[-1] == "🔧 Shell: cmd-8"
     display = composer.display()
     assert "cmd-0" not in display
-    assert "cmd\\-30" in display
+    assert "cmd\\-8" in display
+
+
+def test_composer_skips_consecutive_duplicate_tool_call() -> None:
+    composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
+    composer.on_tool_call("🔧 Shell: ls")
+    composer.on_tool_call("🔧 Shell: ls")
+    assert len(composer._tools) == 1
+    composer.on_tool_call("🔧 Read: a")
+    composer.on_tool_call("🔧 Read: a")
+    assert composer._tools == ["🔧 Shell: ls", "🔧 Read: a"]
 
 
 def test_composer_drops_oldest_tools_when_single_line_exceeds_telegram_limit() -> None:

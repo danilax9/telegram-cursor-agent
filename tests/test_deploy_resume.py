@@ -462,3 +462,29 @@ async def test_bot_delivers_notifications_when_ready(
         user.telegram_id, "🟢 Бот онлайн после перезапуска"
     )
     assert read_marker(settings) is None
+
+
+def test_fix_request_is_claimed_once(deploy_settings) -> None:
+    from telegram_cursor_agent.services.deploy_resume import (
+        build_rollback_diagnosis_prompt,
+        claim_fix_request,
+        write_fix_request,
+    )
+
+    write_fix_request(
+        deploy_settings,
+        reason="bot crashed while typing",
+        telegram_id=1,
+        user_id="u",
+        session_id="s",
+        cursor_chat_id="chat",
+        workspace="/tmp",
+    )
+    first = claim_fix_request(deploy_settings)
+    second = claim_fix_request(deploy_settings)
+    assert first is not None
+    assert first["cursor_chat_id"] == "chat"
+    assert second is None
+    prompt = build_rollback_diagnosis_prompt("bot crashed while typing")
+    assert "последн" in prompt.lower() or "last dialogue" in prompt.lower()
+    assert "bot crashed while typing" in prompt

@@ -102,7 +102,7 @@ async def test_broken_payload_fails_task_instead_of_hanging(
         assert stored is not None
         assert stored.status == "failed"
     notifier.send.assert_awaited_once()
-    assert "ошибкой" in notifier.send.await_args.args[1]
+    assert "прервалась" in notifier.send.await_args.args[1]
 
 
 async def test_status_write_retries_after_db_blip(db_session, worker_settings) -> None:
@@ -158,7 +158,7 @@ async def test_watchdog_reclaims_abandoned_running_task(
         stored = await TaskRepository(check).get_by_id(task.id)
         assert stored is not None
         assert stored.status == "failed"
-    notifier.send.assert_awaited_once_with(9004, STUCK_TASK_MESSAGE)
+    notifier.send.assert_awaited_once_with(9004, STUCK_TASK_MESSAGE, reply_markup=None)
 
 
 async def test_watchdog_leaves_fresh_and_current_tasks_alone(
@@ -216,7 +216,7 @@ async def test_live_finalize_failure_falls_back_to_plain_message(
 
     await worker._deliver_result(live, 9006, "result text")
 
-    notifier.send.assert_awaited_once_with(9006, "result text")
+    notifier.send.assert_awaited_once_with(9006, "result text", reply_markup=None)
 
 
 async def test_cancel_listener_is_restarted_after_failure(worker_settings) -> None:
@@ -263,8 +263,8 @@ async def test_timeout_is_reported_as_timeout_not_cancellation(
         assert stored.status == "failed"
         assert "timed out" in (stored.error or "")
 
-    notifier.edit_live_message.assert_awaited_once()
-    message = notifier.edit_live_message.await_args.args[2]
+    notifier.send.assert_awaited()
+    message = notifier.send.await_args.args[1]
     assert "Задача отменена" not in message
     assert "30 мин" in message
     assert "переписал config.py" in message
