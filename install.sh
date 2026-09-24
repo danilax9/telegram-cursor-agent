@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bootstrap installer. One command on a fresh server:
 #
-#   curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
 #
 # Optional environment variables:
 #   TCA_GITHUB_REPO    — owner/repo (default: danilax9/telegram-cursor-agent)

@@ -494,6 +494,10 @@ MAX_UPLOAD_BYTES=10485760
 
 LOG_LEVEL=INFO
 APP_ENV=production
+
+UV_BIN=${UV_BIN}
+CURSOR_MCP_CONFIG_PATH=${HOME}/.cursor/mcp.json
+CURSOR_APPROVE_MCPS=true
 EOF
   chmod 600 "${env_file}"
 }
@@ -567,6 +571,20 @@ EnvironmentFile=${install_root}/.env
 Environment=DATABASE_URL=postgresql+asyncpg://tca:tca_secret@127.0.0.1:5433/telegram_cursor_agent
 Environment=REDIS_URL=redis://127.0.0.1:6380/0
 Environment=CURSOR_CLI_PATH=${CURSOR_CLI}
+Environment=PROJECTS_ROOT=${install_root}/workspace
+Environment=PROJECT_SEARCH_ROOTS=${install_root}/workspace,${install_root}
+Environment=ALLOWED_PROJECT_ROOTS=/
+Environment=SANDBOX_OPEN=true
+Environment=SELF_DEPLOY_ENABLED=true
+Environment=SELF_REPO_ROOT=${install_root}
+Environment=AGENT_WORKSPACE=/
+Environment=DEPLOY_SCRIPT=${install_root}/scripts/deploy-self.sh
+Environment=UPLOAD_STORAGE_PATH=${install_root}/data/uploads
+Environment=CURSOR_MCP_CONFIG_PATH=${HOME}/.cursor/mcp.json
+Environment=CURSOR_APPROVE_MCPS=true
+Environment=CURSOR_ACCOUNTS_FILE=${CURSOR_ACCOUNTS_FILE}
+Environment=CURSOR_ACCOUNTS_DIR=${CURSOR_ACCOUNTS_DIR}
+Environment=UV_BIN=${UV_BIN}
 ExecStart=${UV_BIN} run telegram-cursor-worker
 Restart=always
 RestartSec=3
@@ -580,6 +598,35 @@ EOF
   systemctl daemon-reload
   systemctl enable "${WORKER_SERVICE}"
   systemctl restart "${WORKER_SERVICE}"
+}
+
+wait_until_ready() {
+  local install_root="$1"
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  log "Waiting until bot and worker are up..."
+  local i=0
+  local bot_ok=0
+  local worker_ok=0
+  while [[ ${i} -lt 40 ]]; do
+    if docker compose -f "${install_root}/docker-compose.yml" ps --status running --services 2>/dev/null | grep -qx bot; then
+      bot_ok=1
+    fi
+    if systemctl is-active --quiet "${WORKER_SERVICE}"; then
+      worker_ok=1
+    fi
+    if [[ ${bot_ok} -eq 1 && ${worker_ok} -eq 1 ]]; then
+      log "Bot container and worker are running"
+      return 0
+    fi
+    sleep 3
+    i=$((i + 1))
+  done
+  docker compose -f "${install_root}/docker-compose.yml" ps >&2 || true
+  docker compose -f "${install_root}/docker-compose.yml" logs --tail 40 bot >&2 || true
+  systemctl status "${WORKER_SERVICE}" --no-pager >&2 || true
+  die "Бот или worker не поднялись. Логи выше."
 }
 
 prepare_directories() {
@@ -632,7 +679,7 @@ main() {
   echo ""
 
   if [[ "$(id -u)" -ne 0 ]]; then
-    warn "Рекомендуется запуск от root (Docker, systemd)"
+    die "Нужен root. Команда: curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash"
   fi
 
   local existing_root
@@ -682,6 +729,7 @@ main() {
   start_docker_stack "${install_root}"
   run_migrations "${install_root}"
   install_worker_service "${install_root}"
+  wait_until_ready "${install_root}"
 
   ADMIN_TELEGRAM_ID="${admin_ids}"
   print_success "${install_root}"

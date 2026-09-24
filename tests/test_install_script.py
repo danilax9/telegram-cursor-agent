@@ -25,6 +25,9 @@ def test_install_script_contains_required_prompts() -> None:
     assert 'install_root="$(clone_or_update_repo' not in content
     assert "ensure_docker_running" in content
     assert "ensure_disk_space" in content
+    assert "UV_BIN=" in content
+    assert "wait_until_ready" in content
+    assert "Нужен root" in content
 
 
 def test_bootstrap_script_documents_one_liner() -> None:

@@ -16,7 +16,7 @@ Production-quality Telegram bot that remotely drives the Cursor CLI coding agent
 ### One-command install (any server)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
 ```
 
 Interactive installer asks for:
