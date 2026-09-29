@@ -1,5 +1,7 @@
 """OpenCode CLI adapter. Headless `opencode run --format json`."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import sqlite3

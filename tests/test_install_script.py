@@ -41,6 +41,8 @@ def test_bootstrap_script_documents_one_liner() -> None:
     content = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     assert "raw.githubusercontent.com" in content
     assert "danilax9/telegram-cursor-agent" in content
+    assert "BASH_SOURCE[0]:-" in content
+    assert "Installing git" in content
 
 
 def test_uninstall_scripts_exist() -> None:

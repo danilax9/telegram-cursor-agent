@@ -28,13 +28,30 @@ log() {
 }
 
 # When executed from a cloned repo, run the full installer directly.
-if [[ -f "$(dirname "${BASH_SOURCE[0]}")/scripts/install.sh" ]]; then
+# BASH_SOURCE is unset when the script is piped: curl | bash.
+_bootstrap_self="${BASH_SOURCE[0]:-}"
+if [[ -n "${_bootstrap_self}" && -f "$(dirname "${_bootstrap_self}")/scripts/install.sh" ]]; then
   export TCA_REPO_URL TCA_INSTALL_DIR TCA_REPO_BRANCH
-  exec bash "$(dirname "${BASH_SOURCE[0]}")/scripts/install.sh" "$@"
+  exec bash "$(dirname "${_bootstrap_self}")/scripts/install.sh" "$@"
 fi
 
 log "Repository: ${TCA_GITHUB_REPO} (branch: ${TCA_REPO_BRANCH})"
 log "Install dir: ${TCA_INSTALL_DIR}"
+
+if ! command -v git >/dev/null 2>&1; then
+  log "Installing git..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq
+    apt-get install -y -qq git ca-certificates
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y git ca-certificates
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y git ca-certificates
+  else
+    log "git is not installed and there is no apt/dnf/yum"
+    exit 1
+  fi
+fi
 
 if [[ -d "${TCA_INSTALL_DIR}/.git" ]]; then
   log "Directory exists, updating..."
