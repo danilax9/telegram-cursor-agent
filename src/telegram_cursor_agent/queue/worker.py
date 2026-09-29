@@ -14,7 +14,14 @@ from redis.asyncio import Redis
 from aiogram.types import ReplyMarkupUnion
 
 from telegram_cursor_agent.agent.adapter import AgentResult, CursorAgentAdapter
-from telegram_cursor_agent.agent.prompts import build_redirect_prompt
+from telegram_cursor_agent.agent.opencode_adapter import OpenCodeAgentAdapter
+from telegram_cursor_agent.agent.prompts import (
+    redirect_prompt_from_payload,
+    normalize_review_mode,
+    review_follow_up,
+    review_marked_ok,
+    strip_review_mark,
+)
 from telegram_cursor_agent.core.config import get_settings
 from telegram_cursor_agent.core.logging import get_logger, setup_logging
 from telegram_cursor_agent.database.models.task import Task
@@ -38,6 +45,12 @@ from telegram_cursor_agent.services.cursor_accounts import (
     CursorAccountError,
     CursorAccountService,
 )
+from telegram_cursor_agent.services.cursor_models import load_selected_model_id
+from telegram_cursor_agent.agent.session_titles import (
+    resume_id_for_engine,
+    saved_chat_kind,
+)
+from telegram_cursor_agent.services.opencode_models import is_opencode_model
 from telegram_cursor_agent.services.cursor_models import (
     REFRESH_MODELS_MENU_UPDATED,
     catalog_from_models_output,
@@ -109,6 +122,7 @@ from telegram_cursor_agent.telegram.live_message import (
 )
 from telegram_cursor_agent.telegram.session_live import (
     CONTINUE_STATUS_TEXT,
+    REVIEW_STATUS_TEXT,
     REDIRECT_STATUS_TEXT,
     persist_live_message_ref,
 )
@@ -138,6 +152,7 @@ class TaskWorker:
         self._queue: TaskQueue | None = None
         self._notifier = TelegramNotifier(self._settings)
         self._active_task_pids: dict[str, int] = {}
+        self._cancel_requested: set[str] = set()
         self._session_task_map: dict[str, str] = {}
         self._current_task_id: str | None = None
         self._last_watchdog_at = 0.0
@@ -323,14 +338,15 @@ class TaskWorker:
         if self._queue is None:
             return
         async for task_id in self._queue.listen_cancel():
+            self._cancel_requested.add(task_id)
             pid = self._active_task_pids.get(task_id)
+            if pid is None:
+                async with self._session_factory() as db:
+                    task = await TaskRepository(db).get_by_id(uuid.UUID(task_id))
+                    if task and task.process_pid:
+                        pid = task.process_pid
             if pid is not None:
                 await self._runner.cancel_pid(pid)
-                continue
-            async with self._session_factory() as db:
-                task = await TaskRepository(db).get_by_id(uuid.UUID(task_id))
-                if task and task.process_pid:
-                    await self._runner.cancel_pid(task.process_pid)
 
     async def _supervise_session_redirects(self) -> None:
         while True:
@@ -630,7 +646,7 @@ class TaskWorker:
                 except Exception:
                     logger.exception("requeue_orphan_task_failed", task_id=task_id_str)
             return
-        task, telegram_id, show_tool_calls_live, memory_change_notify = claimed
+        task, telegram_id, show_tool_calls_live, memory_change_notify, review_mode = claimed
         self._current_task_id = task_id_str
         if task.session_id is not None and task.task_type == "agent_prompt":
             self._session_task_map[str(task.session_id)] = task_id_str
@@ -646,6 +662,7 @@ class TaskWorker:
                 telegram_id,
                 show_tool_calls_live=show_tool_calls_live,
                 memory_change_notify=memory_change_notify,
+                review_mode=review_mode,
             )
         except Exception as exc:
             # Safety net: whatever fails, the task never stays "running" in silence.
@@ -659,7 +676,7 @@ class TaskWorker:
 
     async def _claim_task(
         self, task_id: uuid.UUID
-    ) -> tuple[Task, int | None, bool, bool] | None:
+    ) -> tuple[Task, int | None, bool, bool, bool] | None:
         """Mark the task running in a short transaction and snapshot what we need."""
         async with self._session_factory() as db:
             tasks = TaskRepository(db)
@@ -675,8 +692,17 @@ class TaskWorker:
             memory_change_notify = (
                 bool(user.memory_change_notify) if user is not None else True
             )
+            review_mode = (
+                normalize_review_mode(user.review_mode) if user is not None else "off"
+            )
             await db.commit()
-        return task, telegram_id, show_tool_calls_live, memory_change_notify
+        return (
+            task,
+            telegram_id,
+            show_tool_calls_live,
+            memory_change_notify,
+            review_mode,
+        )
 
     async def _run_claimed_task(
         self,
@@ -685,6 +711,7 @@ class TaskWorker:
         *,
         show_tool_calls_live: bool = False,
         memory_change_notify: bool = True,
+        review_mode: str = "off",
     ) -> None:
         task_id = task.id
         task_id_str = str(task_id)
@@ -763,15 +790,34 @@ class TaskWorker:
                     self._settings, telegram_id
                 )
 
+            async def _sync_live_message() -> None:
+                if (
+                    not live_ref_persisted
+                    or live is None
+                    or task.session_id is None
+                    or self._redis is None
+                ):
+                    return
+                ref = await SessionExecutionService(self._redis).get_live_message(
+                    task.session_id
+                )
+                if ref is None:
+                    return
+                _, message_id = ref
+                if live.message_id != message_id:
+                    live.adopt_message(message_id)
+
             async def _maybe_persist_live_ref() -> None:
                 nonlocal live_ref_persisted
                 if (
-                    live_ref_persisted
-                    or live is None
+                    live is None
                     or live.message_id is None
                     or task.session_id is None
                     or self._redis is None
                 ):
+                    return
+                await _sync_live_message()
+                if live_ref_persisted:
                     return
                 await persist_live_message_ref(
                     self._redis,
@@ -782,6 +828,9 @@ class TaskWorker:
                 live_ref_persisted = True
 
             async def on_progress(text: str) -> None:
+                if task_id_str in self._cancel_requested:
+                    return
+                await _sync_live_message()
                 if live is not None:
                     if show_tool_calls_live:
                         await live.replace_display(text)
@@ -791,10 +840,15 @@ class TaskWorker:
                     await _maybe_persist_live_ref()
 
             async def on_status(text: str) -> None:
+                if task_id_str in self._cancel_requested:
+                    return
+                await _sync_live_message()
                 if live is not None:
                     await live.update_status(text)
                     await refresh_typing()
                     await _maybe_persist_live_ref()
+
+            await _maybe_persist_live_ref()
 
             try:
                 result = await self._execute(
@@ -803,6 +857,7 @@ class TaskWorker:
                     telegram_id=telegram_id,
                     on_status=on_status if live is not None else None,
                     show_tool_calls_live=show_tool_calls_live,
+                    review_mode=review_mode,
                 )
             except AgentTimeoutError as exc:
                 timeout_error = str(exc)
@@ -822,9 +877,23 @@ class TaskWorker:
 
             self._clear_session_marker(task, is_system_recovery)
 
-            if result == "Task cancelled.":
-                await self._persist_status(task_id, lambda repo: repo.mark_cancelled(task_id))
-                await self._notify_safe(telegram_id, "Задача отменена.")
+            if result == "Task cancelled." or task_id_str in self._cancel_requested:
+                already_stopped = {"yes": False}
+
+                async def mark_stopped(repo: TaskRepository) -> None:
+                    current = await repo.get_by_id(task_id)
+                    already_stopped["yes"] = (
+                        current is not None and current.status == "cancelled"
+                    )
+                    await repo.mark_cancelled(task_id)
+
+                await self._persist_status(task_id, mark_stopped)
+                if task.session_id is not None and self._redis is not None:
+                    await SessionExecutionService(self._redis).clear_redirect_instructions(
+                        task.session_id
+                    )
+                if not already_stopped["yes"] and task_id_str not in self._cancel_requested:
+                    await self._notify_safe(telegram_id, "Задача отменена.")
                 return
 
             attachments: list[OutboundAttachment] = []
@@ -837,9 +906,23 @@ class TaskWorker:
                 if not user_message.strip() and attachments:
                     user_message = "📎 Файлы во вложении."
             # Persist before delivering: a Telegram outage must not discard the result.
-            await self._persist_status(
-                task_id, lambda repo: repo.mark_completed(task_id, user_message)
-            )
+            # Status is read in the same session so a DB blip stays on the retry path.
+            stopped = {"yes": False}
+
+            async def complete_unless_stopped(repo: TaskRepository) -> None:
+                current = await repo.get_by_id(task_id)
+                if current is not None and current.status == "cancelled":
+                    stopped["yes"] = True
+                    return
+                await repo.mark_completed(task_id, user_message)
+
+            await self._persist_status(task_id, complete_unless_stopped)
+            if task.session_id is not None and self._redis is not None:
+                await SessionExecutionService(self._redis).clear_redirect_instructions(
+                    task.session_id
+                )
+            if stopped["yes"]:
+                return
             if (
                 telegram_id is not None
                 and not silent_recovery
@@ -864,6 +947,10 @@ class TaskWorker:
                     notify_enabled=memory_change_notify,
                 )
             await stop_typing()
+            if task.session_id is not None and self._redis is not None:
+                await SessionExecutionService(self._redis).clear_live_message(
+                    task.session_id
+                )
 
     def _clear_session_marker(self, task: Task, is_system_recovery: bool) -> None:
         if task.task_type != "agent_prompt" or is_system_recovery:
@@ -1048,12 +1135,15 @@ class TaskWorker:
         on_status: Callable[[str], Awaitable[None]] | None = None,
         *,
         show_tool_calls_live: bool = False,
+        review_mode: str = "off",
     ) -> str:
         payload = json.loads(task.payload or "{}")
         task_id_str = str(task.id)
 
         async def on_process_start(pid: int) -> None:
             self._active_task_pids[task_id_str] = pid
+            if task_id_str in self._cancel_requested:
+                await self._runner.cancel_pid(pid)
             if task.session_id is not None and self._redis is not None:
                 await SessionExecutionService(self._redis).register_running_task(
                     task.session_id, task.id
@@ -1189,6 +1279,7 @@ class TaskWorker:
                 on_status=on_status,
                 on_process_start=on_process_start,
                 show_tool_calls_live=show_tool_calls_live,
+                review_mode=review_mode,
             )
 
         raise ValueError(f"Unknown task type: {task.task_type}")
@@ -1203,17 +1294,24 @@ class TaskWorker:
         on_process_start: Callable[[int], Awaitable[None]] | None = None,
         *,
         show_tool_calls_live: bool = False,
+        review_mode: str = "off",
     ) -> str:
+        use_opencode = is_opencode_model(load_selected_model_id(self._settings))
         accounts = CursorAccountService(self._settings, self._redis)
         switch_notice = ""
-        proactive = await accounts.ensure_healthy_active_account()
-        if proactive is not None:
-            switch_notice = (
-                f"Аккаунт Cursor переключён на `{proactive.id}` "
-                f"({proactive.label}) — предыдущий недоступен.\n\n"
-            )
+        if not use_opencode:
+            proactive = await accounts.ensure_healthy_active_account()
+            if proactive is not None:
+                switch_notice = (
+                    f"Аккаунт Cursor переключён на `{proactive.id}` "
+                    f"({proactive.label}) — предыдущий недоступен.\n\n"
+                )
 
-        adapter = CursorAgentAdapter(self._settings, self._runner)
+        adapter: CursorAgentAdapter | OpenCodeAgentAdapter
+        if use_opencode:
+            adapter = OpenCodeAgentAdapter(self._settings, self._runner)
+        else:
+            adapter = CursorAgentAdapter(self._settings, self._runner)
         workspace = self._resolve_workspace(
             payload.get("agent_workspace") or payload.get("workspace")
         )
@@ -1228,14 +1326,19 @@ class TaskWorker:
             else None
         )
 
-        if session_id and resume_chat_id is None:
+        if session_id:
             async with self._session_factory() as db:
                 sessions = SessionRepository(db)
                 agent_session = await sessions.get_by_id(session_id)
-                if agent_session and agent_session.cursor_chat_id:
-                    resume_chat_id = agent_session.cursor_chat_id
+            if agent_session is not None:
+                resume_chat_id = resume_id_for_engine(
+                    use_opencode=use_opencode,
+                    cursor_chat_id=agent_session.cursor_chat_id,
+                    opencode_session_id=agent_session.opencode_session_id,
+                )
 
         redirect_iteration = 0
+        review_passes = 0
         output = "(no output)"
 
         try:
@@ -1249,6 +1352,7 @@ class TaskWorker:
                         task_id=str(task.id),
                     )
                 else:
+                    self._cancel_requested.discard(str(task.id))
                     if on_status is not None:
                         await on_status(CONTINUE_STATUS_TEXT)
                     logger.info(
@@ -1258,14 +1362,18 @@ class TaskWorker:
                         iteration=redirect_iteration,
                     )
 
-                active = await accounts.get_active_account()
-                await accounts.activate_account(active)
+                process_env: dict[str, str] | None = None
+                active = None
+                if not use_opencode:
+                    active = await accounts.get_active_account()
+                    await accounts.activate_account(active)
+                    process_env = accounts.account_env(active)
                 agent_result = await self._execute_agent_prompt(
                     adapter,
                     workspace,
                     prompt,
                     resume_chat_id,
-                    accounts.account_env(active),
+                    process_env,
                     task=task,
                     on_progress=on_progress,
                     on_status=on_status,
@@ -1282,7 +1390,11 @@ class TaskWorker:
                         cancelled=agent_result.cancelled,
                     )
                 )
-                if is_account_switchable_failure(failure):
+                if (
+                    not use_opencode
+                    and active is not None
+                    and is_account_switchable_failure(failure)
+                ):
                     next_account = await accounts.rotate_after_failure(
                         active.id, failure.value
                     )
@@ -1307,18 +1419,24 @@ class TaskWorker:
                         )
 
                 if agent_result.cursor_chat_id and session_id:
+                    saved_id = agent_result.cursor_chat_id
+                    kind = saved_chat_kind(saved_id)
                     async with self._session_factory() as db:
                         sessions = SessionRepository(db)
-                        await sessions.update_cursor_chat_id(
-                            session_id, agent_result.cursor_chat_id
-                        )
+                        if kind == "opencode":
+                            await sessions.update_opencode_session_id(
+                                session_id, saved_id
+                            )
+                        else:
+                            await sessions.update_cursor_chat_id(session_id, saved_id)
                         await db.commit()
-                    resume_chat_id = agent_result.cursor_chat_id
-                    update_marker_fields(
-                        self._settings,
-                        cursor_chat_id=agent_result.cursor_chat_id,
-                        session_id=str(session_id),
-                    )
+                    resume_chat_id = saved_id
+                    if kind == "cursor":
+                        update_marker_fields(
+                            self._settings,
+                            cursor_chat_id=saved_id,
+                            session_id=str(session_id),
+                        )
 
                 pending = (
                     await session_exec.consume_pending_redirect(session_id)
@@ -1327,7 +1445,8 @@ class TaskWorker:
                 )
                 if pending:
                     redirect_iteration += 1
-                    prompt = build_redirect_prompt(str(pending.get("prompt", "")))
+                    review_passes = 0
+                    prompt = redirect_prompt_from_payload(pending)
                     workspace = self._resolve_workspace(
                         pending.get("agent_workspace")
                         or pending.get("workspace")
@@ -1350,9 +1469,8 @@ class TaskWorker:
                     )
                     if pending_late:
                         redirect_iteration += 1
-                        prompt = build_redirect_prompt(
-                            str(pending_late.get("prompt", ""))
-                        )
+                        review_passes = 0
+                        prompt = redirect_prompt_from_payload(pending_late)
                         workspace = self._resolve_workspace(
                             pending_late.get("agent_workspace")
                             or pending_late.get("workspace")
@@ -1377,9 +1495,8 @@ class TaskWorker:
                     )
                     if pending_on_cancel:
                         redirect_iteration += 1
-                        prompt = build_redirect_prompt(
-                            str(pending_on_cancel.get("prompt", ""))
-                        )
+                        review_passes = 0
+                        prompt = redirect_prompt_from_payload(pending_on_cancel)
                         workspace = self._resolve_workspace(
                             pending_on_cancel.get("agent_workspace")
                             or pending_on_cancel.get("workspace")
@@ -1401,7 +1518,39 @@ class TaskWorker:
                         self._settings.task_timeout, agent_result.output
                     )
 
-                output = agent_result.output or "(no output)"
+                raw_output = agent_result.output or ""
+                if (
+                    review_passes > 0
+                    and normalize_review_mode(review_mode) == "max"
+                    and review_marked_ok(raw_output)
+                ):
+                    output = strip_review_mark(raw_output) or "(no output)"
+                    break
+
+                follow_up = review_follow_up(review_mode, prompt, review_passes)
+                if follow_up is not None and resume_chat_id:
+                    review_passes += 1
+                    prompt = follow_up
+                    if on_status is not None:
+                        status = (
+                            REVIEW_STATUS_TEXT
+                            if review_passes == 1
+                            else f"🔎 Проверка {review_passes}..."
+                        )
+                        await on_status(status)
+                    logger.info(
+                        "review_pass_started",
+                        session_id=str(session_id),
+                        task_id=str(task.id),
+                        review_pass=review_passes,
+                        review_mode=normalize_review_mode(review_mode),
+                    )
+                    continue
+
+                if review_passes > 0 and normalize_review_mode(review_mode) == "max":
+                    output = strip_review_mark(raw_output) or raw_output or "(no output)"
+                else:
+                    output = raw_output or "(no output)"
                 break
         finally:
             if session_exec is not None and session_id is not None:
@@ -1418,11 +1567,11 @@ class TaskWorker:
 
     async def _execute_agent_prompt(
         self,
-        adapter: CursorAgentAdapter,
+        adapter: CursorAgentAdapter | OpenCodeAgentAdapter,
         workspace: str,
         prompt: str,
         resume_chat_id: str | None,
-        process_env: dict[str, str],
+        process_env: dict[str, str] | None,
         task: Task | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_status: Callable[[str], Awaitable[None]] | None = None,

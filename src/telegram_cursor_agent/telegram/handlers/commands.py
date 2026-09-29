@@ -5,6 +5,8 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.agent.prompts import HELP_TEXT
+from telegram_cursor_agent.agent.skills import discover_cursor_skills, format_skills_menu
+from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import (
     prepare_agent_reply_text,
@@ -126,6 +128,23 @@ async def cmd_limits(
         settings.cursor_agent_max_output_bytes,
     )
     for chunk in split_telegram_message(text):
+        await message.answer(chunk)
+
+
+@router.message(Command("skills"))
+async def cmd_skills(
+    message: Message,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+) -> None:
+    user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+    workspace = None
+    if user is not None:
+        workspace = await ProjectService(db, settings).resolve_workspace(user)
+    text = format_skills_menu(discover_cursor_skills(settings, workspace))
+    safe = sanitize_for_telegram(text, settings.cursor_agent_max_output_bytes)
+    for chunk in split_telegram_message(safe):
         await message.answer(chunk)
 
 

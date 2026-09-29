@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 from telegram_cursor_agent.database.models.session import AgentSession
-from telegram_cursor_agent.telegram.markdown import md_bold, md_code
+from telegram_cursor_agent.telegram.markdown import md_bold
 
 
 def short_session_id(session_id: UUID) -> str:
@@ -24,8 +24,24 @@ def workspace_label(workspace_path: str) -> str:
     return Path(workspace_path).name or workspace_path
 
 
+def session_engine_name(session: AgentSession) -> str:
+    engine = (session.engine or "").strip()
+    if engine == "opencode":
+        return "OpenCode"
+    if engine == "cursor":
+        return "Cursor"
+    if session.opencode_session_id and not session.cursor_chat_id:
+        return "OpenCode"
+    return "Cursor"
+
+
 def session_display_name(session: AgentSession) -> str:
-    return short_session_id(session.id)
+    title = (session.title or "").strip()
+    if title:
+        return title
+    if session.cursor_chat_id or session.opencode_session_id:
+        return short_session_id(session.id)
+    return "Новая"
 
 
 def format_last_active(last_active_at: datetime | None) -> str:
@@ -58,8 +74,7 @@ def format_session_line(
         status = " (удалена)"
     name = session_display_name(session)
     return (
-        f"{prefix}{active_marker}{md_code(name)} — "
-        f"{workspace_label(session.workspace_path)} — "
+        f"{prefix}{active_marker}{md_bold(name)} · {session_engine_name(session)} — "
         f"{format_last_active(session.last_active_at)}{status}"
     )
 
@@ -67,7 +82,7 @@ def format_session_line(
 def format_session_list(sessions: list[AgentSession], active_id: UUID | None) -> str:
     if not sessions:
         return "Нет сохранённых сессий. Отправь сообщение агенту или используй /new."
-    lines = [md_bold("Сессии Cursor:"), ""]
+    lines = [md_bold("Сессии:"), ""]
     for index, session in enumerate(sessions, start=1):
         lines.append(
             format_session_line(

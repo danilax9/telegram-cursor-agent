@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegram_cursor_agent.agent.prompts import cycle_review_mode
 from telegram_cursor_agent.database.models.user import User
 
 
@@ -81,6 +82,14 @@ class UserRepository:
         if user is None:
             return None
         user.show_tool_calls_live = not user.show_tool_calls_live
+        await self._session.flush()
+        return user
+
+    async def cycle_review_mode(self, user_id: uuid.UUID) -> User | None:
+        user = await self.get_by_id(user_id)
+        if user is None:
+            return None
+        user.review_mode = cycle_review_mode(user.review_mode)
         await self._session.flush()
         return user
 

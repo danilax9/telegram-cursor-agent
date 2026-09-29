@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegram_cursor_agent.agent.sessions import SessionError, SessionService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.database.repositories.user import UserRepository
+from telegram_cursor_agent.services.cursor_models import save_selected_model
 
 
 async def _create_user(db: AsyncSession) -> uuid.UUID:
@@ -91,6 +92,42 @@ async def test_resolve_selector_by_index(
     assert resolved.cursor_chat_id == "chat-2"
     assert resolved.id == second.id
     assert first.status == "archived"
+
+
+@pytest.mark.asyncio
+async def test_engine_switch_resumes_last_session(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    user_id = await _create_user(db_session)
+    service = SessionService(db_session, test_settings)
+    workspace = str(test_settings.projects_root)
+    save_selected_model(test_settings, "composer-2.5")
+
+    cursor = await service.get_or_create_active(user_id, workspace)
+    cursor.title = "чат курсора"
+    await db_session.flush()
+
+    created, action = await service.align_to_engine(user_id, "opencode", workspace)
+    assert action == "created"
+    assert created.engine == "opencode"
+    assert created.id != cursor.id
+    await db_session.refresh(cursor)
+    assert cursor.status == "archived"
+
+    again, action = await service.align_to_engine(user_id, "opencode", workspace)
+    assert action == "same"
+    assert again.id == created.id
+
+    back, action = await service.align_to_engine(user_id, "cursor", workspace)
+    assert action == "resumed"
+    assert back.id == cursor.id
+    assert back.status == "active"
+    await db_session.refresh(created)
+    assert created.status == "archived"
+
+    reopened, action = await service.align_to_engine(user_id, "opencode", workspace)
+    assert action == "resumed"
+    assert reopened.id == created.id
 
 
 @pytest.mark.asyncio

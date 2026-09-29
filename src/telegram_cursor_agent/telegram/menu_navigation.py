@@ -12,7 +12,10 @@ from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.database.models.user import User
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
-from telegram_cursor_agent.agent.session_format import workspace_label
+from telegram_cursor_agent.agent.session_format import (
+    format_session_list,
+    session_display_name,
+)
 from telegram_cursor_agent.agent.sessions import SessionService
 from telegram_cursor_agent.database.repositories.project import ProjectRepository
 from telegram_cursor_agent.services.cursor_models import (
@@ -21,6 +24,8 @@ from telegram_cursor_agent.services.cursor_models import (
     load_selected_model_id,
     resolve_model_label,
 )
+from telegram_cursor_agent.agent.skills import discover_cursor_skills, format_skills_menu
+from telegram_cursor_agent.telegram.keyboards import sessions_menu_keyboard
 from telegram_cursor_agent.telegram.main_menu import (
     CURSOR_SUBMENU_TEXT,
     MAIN_MENU_HEADER,
@@ -28,6 +33,7 @@ from telegram_cursor_agent.telegram.main_menu import (
     accounts_switch_keyboard,
     cursor_submenu_keyboard,
     main_menu_keyboard,
+    skills_submenu_keyboard,
     projects_picker_keyboard,
     static_submenu,
 )
@@ -85,10 +91,7 @@ async def build_home_view(
     session_service = SessionService(db, settings)
     active_session = await session_service.get_active(user.id)
     if active_session is not None:
-        lines.append(
-            f"💬 Сессия `{active_session.id}` — "
-            f"{workspace_label(active_session.workspace_path)}"
-        )
+        lines.append(f"💬 *{session_display_name(active_session)}*")
     else:
         lines.append("💬 _нет активной сессии_")
 
@@ -110,6 +113,14 @@ async def build_submenu_view(
     telegram_user_id: int,
     redis_client: Redis | None = None,  # type: ignore[type-arg]
 ) -> tuple[str, InlineKeyboardMarkup] | None:
+    if submenu == "sessions":
+        session_service = SessionService(db, settings)
+        sessions = await session_service.list_resumable(user.id)
+        active = await session_service.get_active(user.id)
+        text = format_session_list(sessions, active.id if active else None)
+        text += "\n\nНажми сессию, чтобы продолжить. «Новая» начинает пустой чат."
+        return text, sessions_menu_keyboard(sessions)
+
     if submenu == "projects":
         project_service = ProjectService(db, settings)
         projects = await project_service.sync_discovered(user.id)
@@ -123,10 +134,18 @@ async def build_submenu_view(
                 lines.append(f"{mark}*{project.name}* — `{project.root_path}`")
         return "\n".join(lines), projects_picker_keyboard(projects, active_id)
 
+    if submenu == "skills":
+        workspace = await ProjectService(db, settings).resolve_workspace(user)
+        skills = discover_cursor_skills(settings, workspace)
+        return format_skills_menu(skills), skills_submenu_keyboard()
+
     if submenu == "cursor":
         return (
             build_cursor_submenu_text(settings),
-            cursor_submenu_keyboard(user.show_tool_calls_live),
+            cursor_submenu_keyboard(
+                user.show_tool_calls_live,
+                review_mode=user.review_mode,
+            ),
         )
 
     if submenu == "accounts":

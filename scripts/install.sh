@@ -6,7 +6,8 @@ TCA_VERSION="0.1.0"
 TCA_INSTALL_DIR="${TCA_INSTALL_DIR:-}"
 TCA_REPO_URL="${TCA_REPO_URL:-}"
 TCA_REPO_BRANCH="${TCA_REPO_BRANCH:-main}"
-TCA_SKIP_CURSOR_LOGIN="${TCA_SKIP_CURSOR_LOGIN:-0}"
+TCA_SKIP_CURSOR_LOGIN="${TCA_SKIP_CURSOR_LOGIN:-1}"
+TCA_CURSOR_LOGIN="${TCA_CURSOR_LOGIN:-0}"
 TCA_NONINTERACTIVE="${TCA_NONINTERACTIVE:-0}"
 TCA_DRY_RUN="${TCA_DRY_RUN:-0}"
 
@@ -17,6 +18,7 @@ CURSOR_AUTH_FILE="${CURSOR_AUTH_FILE:-${HOME}/.config/cursor/auth.json}"
 CURSOR_ACCOUNTS_DIR="${CURSOR_ACCOUNTS_DIR:-${HOME}/.cursor-accounts}"
 CURSOR_ACCOUNTS_FILE="${CURSOR_ACCOUNTS_FILE:-${CURSOR_ACCOUNTS_DIR}/accounts.json}"
 CURSOR_CLI="${CURSOR_CLI_PATH:-agent}"
+OPENCODE_CLI="${OPENCODE_CLI_PATH:-${HOME}/.opencode/bin/opencode}"
 UV_BIN="${UV_BIN:-${HOME}/.local/bin/uv}"
 WORKER_SERVICE="${WORKER_SERVICE_NAME:-telegram-cursor-agent-worker}"
 LOGIN_TIMEOUT="${CURSOR_ACCOUNT_LOGIN_TIMEOUT_SECONDS:-600}"
@@ -36,6 +38,36 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+is_macos() {
+  [[ "$(uname -s)" == "Darwin" ]]
+}
+
+ensure_brew() {
+  if ! is_macos; then
+    return 0
+  fi
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+  if need_cmd brew; then
+    return 0
+  fi
+  log "Installing Homebrew..."
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    log "dry-run: Homebrew install"
+    return 0
+  fi
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+  need_cmd brew || die "Homebrew не установился"
 }
 
 is_interactive() {
@@ -154,6 +186,12 @@ detect_repo_root() {
 }
 
 install_system_packages() {
+  if is_macos; then
+    ensure_brew
+    log "Installing git and curl via Homebrew..."
+    run brew install git curl
+    return 0
+  fi
   if need_cmd apt-get; then
     log "Installing system packages (git, curl, ca-certificates)..."
     run apt-get update -qq
@@ -178,6 +216,12 @@ install_node_for_mcp() {
     log "Node.js / npx already installed in /usr/local/bin"
     return 0
   fi
+  if is_macos; then
+    ensure_brew
+    log "Installing Node.js via Homebrew..."
+    run brew install node
+    return 0
+  fi
   local node_ver="${TCA_NODE_VERSION:-22.14.0}"
   local arch="linux-x64"
   local uname_m
@@ -198,7 +242,32 @@ install_node_for_mcp() {
   log "npx: /usr/local/bin/npx ($( /usr/local/bin/node -v ))"
 }
 
+install_docker_macos() {
+  if need_cmd docker && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    log "Docker already installed"
+    ensure_docker_running
+    return 0
+  fi
+  ensure_brew
+  log "Installing Colima and Docker CLI..."
+  run brew install colima docker docker-compose
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  mkdir -p "${HOME}/.docker/cli-plugins"
+  local compose_bin
+  compose_bin="$(brew --prefix)/opt/docker-compose/bin/docker-compose"
+  if [[ -x "${compose_bin}" ]]; then
+    ln -sfn "${compose_bin}" "${HOME}/.docker/cli-plugins/docker-compose"
+  fi
+  ensure_docker_running
+}
+
 install_docker() {
+  if is_macos; then
+    install_docker_macos
+    return 0
+  fi
   if ! need_cmd docker || ! docker compose version >/dev/null 2>&1; then
     log "Installing Docker..."
     if [[ "${TCA_DRY_RUN}" == "1" ]]; then
@@ -214,6 +283,19 @@ install_docker() {
 
 ensure_docker_running() {
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  if is_macos; then
+    if docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    if need_cmd colima; then
+      log "Starting Colima..."
+      colima start --cpu 2 --memory 4
+    fi
+    if ! docker info >/dev/null 2>&1; then
+      die "Docker не запущен. На macOS нужен Colima или Docker Desktop."
+    fi
     return 0
   fi
   if ! need_cmd docker; then
@@ -292,8 +374,38 @@ install_cursor_cli() {
   ensure_path
   CURSOR_CLI="$(command -v agent || command -v cursor-agent || true)"
   if [[ -z "${CURSOR_CLI}" ]]; then
-    die "Cursor CLI not found after installation"
+    warn "Cursor CLI не установился. Бот всё равно работает через OpenCode; войти в Cursor можно позже."
+    CURSOR_CLI="agent"
   fi
+}
+
+install_opencode() {
+  ensure_path
+  export PATH="${HOME}/.opencode/bin:${PATH}"
+  if need_cmd opencode; then
+    OPENCODE_CLI="$(command -v opencode)"
+    log "OpenCode already installed: ${OPENCODE_CLI}"
+  elif [[ -x "${HOME}/.opencode/bin/opencode" ]]; then
+    OPENCODE_CLI="${HOME}/.opencode/bin/opencode"
+    log "OpenCode already installed: ${OPENCODE_CLI}"
+  else
+    log "Installing OpenCode CLI..."
+    if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+      log "dry-run: curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+      OPENCODE_CLI="${HOME}/.opencode/bin/opencode"
+      return 0
+    fi
+    curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
+    OPENCODE_CLI="${HOME}/.opencode/bin/opencode"
+    if [[ ! -x "${OPENCODE_CLI}" ]]; then
+      die "OpenCode CLI not found after installation"
+    fi
+  fi
+  if [[ "${OPENCODE_CLI}" != "/usr/local/bin/opencode" ]] && { [[ -w /usr/local/bin ]] || [[ "$(id -u)" -eq 0 ]]; }; then
+    ln -sfn "${OPENCODE_CLI}" /usr/local/bin/opencode
+    OPENCODE_CLI="/usr/local/bin/opencode"
+  fi
+  log "OpenCode: ${OPENCODE_CLI}"
 }
 
 assert_install_root() {
@@ -335,8 +447,8 @@ extract_login_url() {
 }
 
 cursor_login_interactive() {
-  if [[ "${TCA_SKIP_CURSOR_LOGIN}" == "1" ]]; then
-    log "Skipping Cursor login (TCA_SKIP_CURSOR_LOGIN=1)"
+  if [[ "${TCA_CURSOR_LOGIN}" != "1" ]]; then
+    log "Skipping Cursor login"
     return 0
   fi
   if [[ -f "${CURSOR_AUTH_FILE}" ]]; then
@@ -463,7 +575,7 @@ write_env_file() {
   fi
 
   cat >"${env_file}" <<EOF
-# Generated by scripts/install.sh on $(date -Iseconds)
+# Generated by scripts/install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 BOT_TOKEN=${bot_token}
 ADMIN_TELEGRAM_ID=${admin_ids}
 
@@ -471,6 +583,7 @@ DATABASE_URL=postgresql+asyncpg://tca:tca_secret@127.0.0.1:5433/telegram_cursor_
 REDIS_URL=redis://127.0.0.1:6380/0
 
 CURSOR_CLI_PATH=${CURSOR_CLI}
+OPENCODE_CLI_PATH=${OPENCODE_CLI}
 CURSOR_AUTH_FILE=${CURSOR_AUTH_FILE}
 CURSOR_ACCOUNTS_FILE=${CURSOR_ACCOUNTS_FILE}
 CURSOR_ACCOUNTS_DIR=${CURSOR_ACCOUNTS_DIR}
@@ -548,8 +661,52 @@ start_docker_stack() {
   docker compose up -d --build
 }
 
+install_launch_agent() {
+  local install_root="$1"
+  local plist="${HOME}/Library/LaunchAgents/${WORKER_SERVICE}.plist"
+  local domain="gui/$(id -u)"
+  log "Installing launchd worker: ${plist}"
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  mkdir -p "${HOME}/Library/LaunchAgents" "${install_root}/data"
+  cat >"${plist}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${WORKER_SERVICE}</string>
+  <key>WorkingDirectory</key>
+  <string>${install_root}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${install_root}/scripts/run-worker.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${install_root}/data/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>${install_root}/data/worker.err</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
+  launchctl bootstrap "${domain}" "${plist}"
+  launchctl enable "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
+  launchctl kickstart -k "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
+}
+
 install_worker_service() {
   local install_root="$1"
+  if is_macos; then
+    install_launch_agent "${install_root}"
+    return 0
+  fi
   local unit_path="/etc/systemd/system/${WORKER_SERVICE}.service"
   log "Installing systemd worker: ${unit_path}"
 
@@ -571,6 +728,7 @@ EnvironmentFile=${install_root}/.env
 Environment=DATABASE_URL=postgresql+asyncpg://tca:tca_secret@127.0.0.1:5433/telegram_cursor_agent
 Environment=REDIS_URL=redis://127.0.0.1:6380/0
 Environment=CURSOR_CLI_PATH=${CURSOR_CLI}
+Environment=OPENCODE_CLI_PATH=${OPENCODE_CLI}
 Environment=PROJECTS_ROOT=${install_root}/workspace
 Environment=PROJECT_SEARCH_ROOTS=${install_root}/workspace,${install_root}
 Environment=ALLOWED_PROJECT_ROOTS=/
@@ -613,7 +771,11 @@ wait_until_ready() {
     if docker compose -f "${install_root}/docker-compose.yml" ps --status running --services 2>/dev/null | grep -qx bot; then
       bot_ok=1
     fi
-    if systemctl is-active --quiet "${WORKER_SERVICE}"; then
+    if is_macos; then
+      if launchctl print "gui/$(id -u)/${WORKER_SERVICE}" 2>/dev/null | grep -q "state = running"; then
+        worker_ok=1
+      fi
+    elif systemctl is-active --quiet "${WORKER_SERVICE}"; then
       worker_ok=1
     fi
     if [[ ${bot_ok} -eq 1 && ${worker_ok} -eq 1 ]]; then
@@ -625,8 +787,27 @@ wait_until_ready() {
   done
   docker compose -f "${install_root}/docker-compose.yml" ps >&2 || true
   docker compose -f "${install_root}/docker-compose.yml" logs --tail 40 bot >&2 || true
-  systemctl status "${WORKER_SERVICE}" --no-pager >&2 || true
+  if is_macos; then
+    launchctl print "gui/$(id -u)/${WORKER_SERVICE}" >&2 || true
+    tail -n 40 "${install_root}/data/worker.err" >&2 || true
+  else
+    systemctl status "${WORKER_SERVICE}" --no-pager >&2 || true
+  fi
   die "Бот или worker не поднялись. Логи выше."
+}
+
+seed_default_model() {
+  local install_root="$1"
+  local model_file="${install_root}/workspace/.cursor_model"
+  if [[ -f "${model_file}" ]]; then
+    log "Keeping selected model: $(tr -d '\n' < "${model_file}")"
+    return 0
+  fi
+  log "Default model: opencode/big-pickle"
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  printf '%s\n' "opencode/big-pickle" > "${model_file}"
 }
 
 prepare_directories() {
@@ -640,6 +821,10 @@ prepare_directories() {
 refresh_models_catalog() {
   local install_root="$1"
   if [[ ! -f "${install_root}/.env" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${CURSOR_AUTH_FILE}" ]]; then
+    log "Cursor не авторизован — каталог Cursor не обновляю. OpenCode доступен сразу."
     return 0
   fi
   log "Обновление каталога моделей Cursor…"
@@ -663,11 +848,16 @@ print_success() {
   echo "  Каталог:     ${install_root}"
   echo "  Bot token:   настроен"
   echo "  Admin IDs:   ${ADMIN_TELEGRAM_ID:-configured}"
-  echo "  Cursor auth: ${CURSOR_AUTH_FILE}"
+  echo "  Модель:      OpenCode Big Pickle (opencode/big-pickle)"
+  echo "  Cursor:      вход не требуется, его можно пройти позже в боте"
   echo ""
   echo "  Сервисы:"
   echo "    docker compose ps          — статус бота и БД"
-  echo "    systemctl status ${WORKER_SERVICE}  — статус worker"
+  if is_macos; then
+    echo "    launchctl print gui/\$(id -u)/${WORKER_SERVICE}  — статус worker"
+  else
+    echo "    systemctl status ${WORKER_SERVICE}  — статус worker"
+  fi
   echo ""
   echo "  Откройте Telegram и отправьте боту: /start"
   echo ""
@@ -678,7 +868,11 @@ main() {
   echo "Telegram Cursor Agent — установка v${TCA_VERSION}"
   echo ""
 
-  if [[ "$(id -u)" -ne 0 ]]; then
+  if is_macos; then
+    if [[ "$(id -u)" -eq 0 ]]; then
+      die "На macOS запустите без sudo: curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash"
+    fi
+  elif [[ "$(id -u)" -ne 0 ]]; then
     die "Нужен root. Команда: curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash"
   fi
 
@@ -690,6 +884,7 @@ main() {
   install_docker
   install_uv
   install_node_for_mcp
+  install_opencode
   install_cursor_cli
 
   clone_or_update_repo "${install_root}"
@@ -697,6 +892,7 @@ main() {
   REPO_ROOT="${install_root}"
 
   prepare_directories "${install_root}"
+  seed_default_model "${install_root}"
 
   echo ""
   echo "--- Настройка Telegram ---"
@@ -717,10 +913,11 @@ main() {
   fi
   validate_telegram_id "${admin_ids}"
 
-  echo ""
-  echo "--- Авторизация Cursor ---"
-  echo ""
-  cursor_login_interactive
+  log "Вход в Cursor не запрашивается. Модель по умолчанию: OpenCode Big Pickle."
+  log "Войти в Cursor можно в любой момент в боте: Аккаунты."
+  if [[ "${TCA_CURSOR_LOGIN}" == "1" ]]; then
+    cursor_login_interactive
+  fi
 
   write_accounts_json
   write_env_file "${install_root}" "${bot_token}" "${admin_ids}"

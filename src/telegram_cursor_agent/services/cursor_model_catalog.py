@@ -27,6 +27,7 @@ FAMILY_ORDER = [
     "muse",
     "kimi",
     "glm",
+    "opencode",
     "other",
 ]
 
@@ -162,6 +163,8 @@ def detect_family(model_id: str, label: str) -> tuple[str, str]:
         return "kimi", "Kimi"
     if model_id.startswith("glm-"):
         return "glm", "GLM"
+    if model_id.startswith("opencode/"):
+        return "opencode", "OpenCode"
 
     return "other", "Other"
 

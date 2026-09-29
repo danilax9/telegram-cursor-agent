@@ -32,6 +32,19 @@ def test_format_grep_tool_call() -> None:
     assert "typing" in text
 
 
+def test_format_read_skill_md_as_skill_line() -> None:
+    event = {
+        "type": "tool_call",
+        "subtype": "started",
+        "tool_call": {
+            "readToolCall": {
+                "args": {"path": "/root/.cursor/skills/impeccable/SKILL.md"},
+            }
+        },
+    }
+    assert format_tool_call_event(event) == "📚 Скилл: impeccable"
+
+
 def test_skips_completed_tool_call() -> None:
     event = {
         "type": "tool_call",

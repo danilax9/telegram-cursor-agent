@@ -83,7 +83,8 @@ class CursorAgentAdapter:
             model = model_file.read_text(encoding="utf-8").strip()
             if model:
                 cmd.extend(["--model", model])
-        if resume_chat_id:
+        # OpenCode session ids (ses_…) are not Cursor chats.
+        if resume_chat_id and not resume_chat_id.startswith("ses_"):
             cmd.extend(["--resume", resume_chat_id])
         if self._settings.cursor_approve_mcps:
             cmd.append("--approve-mcps")

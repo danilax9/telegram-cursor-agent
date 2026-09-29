@@ -6,6 +6,7 @@ from telegram_cursor_agent.core.security import (
     TELEGRAM_MESSAGE_MAX_CHARS,
     escape_telegram_markdown_v2,
 )
+from telegram_cursor_agent.agent.tool_call_format import SKILL_TOOL_SUMMARY_PREFIX
 from telegram_cursor_agent.telegram.live_message import (
     THINKING_STATUS_TEXT,
     format_progress_message,
@@ -66,17 +67,23 @@ class ToolCallLiveComposer:
     ) -> None:
         self._base = initial_base.strip()
         self._tools: list[str] = []
+        self._skills: list[str] = []
         self._use_rich_details = use_rich_details
         self._tool_expandable = tool_expandable
 
     def on_planning_step(self, step_text: str) -> str:
         self._base = format_progress_message(step_text)
         self._tools = []
+        self._skills = []
         return self.display()
 
     def on_tool_call(self, summary: str) -> str:
         line = summary.strip()
         if line:
+            if line.startswith(SKILL_TOOL_SUMMARY_PREFIX):
+                skill_name = line[len(SKILL_TOOL_SUMMARY_PREFIX) :].strip()
+                if skill_name and skill_name not in self._skills:
+                    self._skills.append(skill_name)
             if self._tools and self._tools[-1] == line:
                 return self.display()
             self._tools.append(line)
@@ -91,10 +98,16 @@ class ToolCallLiveComposer:
             )
         return compose_live_with_tool_quotes(base, tools)
 
+    def _base_with_skills(self) -> str:
+        if not self._skills:
+            return self._base
+        joined = ", ".join(self._skills)
+        return f"{self._base}\n📚 Скиллы: {joined}"
+
     def display(self) -> str:
         while self._tools:
-            text = self._compose(self._base, self._tools)
+            text = self._compose(self._base_with_skills(), self._tools)
             if len(text) <= TELEGRAM_MESSAGE_MAX_CHARS:
                 return text
             self._tools.pop(0)
-        return self._compose(self._base, self._tools)
+        return self._compose(self._base_with_skills(), self._tools)

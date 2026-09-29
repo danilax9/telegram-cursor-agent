@@ -278,7 +278,8 @@ def model_picker_text(
         active or "—",
     )
 
-    lines = ["*Модель Cursor*"]
+    title = "*OpenCode*" if family is not None and family.key == "opencode" else "*Модель Cursor*"
+    lines = [title]
     if active:
         lines.append(f"Сейчас: *{_short_label(active_label, 48)}*")
     lines.append("")

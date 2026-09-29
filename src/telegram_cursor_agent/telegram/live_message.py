@@ -82,6 +82,13 @@ class LiveMessageNotifier:
     def message_id(self) -> int | None:
         return self._message_id
 
+    def adopt_message(self, message_id: int) -> None:
+        """Follow a live bubble that was re-sent below the user's latest text."""
+        if self._message_id == message_id:
+            return
+        self._message_id = message_id
+        self._last_text = None
+
     async def update(self, text: str) -> None:
         try:
             safe_text = self._prepare_intermediate_text(format_progress_message(text))
@@ -215,14 +222,26 @@ class LiveMessageNotifier:
             )
             return
 
-        await self._notifier.edit_live_message(
-            self._telegram_id,
-            self._message_id,
-            safe_text,
-            markdown_v2=use_v2,
-            rich_markdown=use_rich and not use_rich_html,
-            rich_html=use_rich_html,
-        )
+        try:
+            await self._notifier.edit_live_message(
+                self._telegram_id,
+                self._message_id,
+                safe_text,
+                markdown_v2=use_v2,
+                rich_markdown=use_rich and not use_rich_html,
+                rich_html=use_rich_html,
+            )
+        except Exception as exc:
+            if "message to edit not found" not in str(exc).lower():
+                raise
+            self._message_id = None
+            self._last_text = None
+            await self._apply_live_text(
+                safe_text,
+                markdown_v2=markdown_v2,
+                rich_markdown=rich_markdown,
+                rich_html=rich_html,
+            )
 
     async def finalize(self, text: str) -> None:
         safe_text = prepare_agent_reply_text(text.strip(), self._settings)

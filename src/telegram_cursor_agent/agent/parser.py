@@ -30,7 +30,9 @@ class ParsedIntent:
 
 
 _HELP_PHRASES = frozenset({"help", "?", "commands", "what can you do"})
-_CANCEL_PHRASES = frozenset({"cancel", "stop", "abort", "kill"})
+_CANCEL_PHRASES = frozenset(
+    {"cancel", "stop", "abort", "kill", "стоп", "останови", "остановись", "отмена"}
+)
 _STATUS_PHRASES = frozenset({"status", "state", "progress"})
 _DEPLOY_PHRASES = frozenset({"deploy", "self deploy", "self-deploy", "restart bot", "перезапуск"})
 _LIST_PROJECTS_PHRASES = frozenset(
@@ -70,7 +72,7 @@ def parse_intent(text: str) -> ParsedIntent:
     if not text or not text.strip():
         return ParsedIntent(IntentType.UNKNOWN, 0.0)
 
-    normalized = _normalize(text)
+    normalized = _normalize(text).strip(" \t.!?…")
     original = text.strip()
 
     if normalized in _HELP_PHRASES:

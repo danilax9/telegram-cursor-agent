@@ -22,6 +22,14 @@ def test_composer_accumulates_tools_under_thinking() -> None:
     assert "Shell: ls" in display
 
 
+def test_composer_shows_active_skills_in_header() -> None:
+    composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
+    composer.on_tool_call("📚 Скилл: impeccable")
+    composer.on_tool_call("📚 Скилл: copywriting")
+    display = composer.display()
+    assert "📚 Скиллы: impeccable, copywriting" in display
+
+
 def test_composer_resets_tools_on_new_step() -> None:
     composer = ToolCallLiveComposer(THINKING_STATUS_TEXT)
     composer.on_tool_call("🔧 Shell: ls")

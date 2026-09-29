@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram_cursor_agent.agent.session_format import (
     session_display_name,
-    workspace_label,
+    session_engine_name,
 )
 from telegram_cursor_agent.database.models.session import AgentSession
 
@@ -59,13 +59,25 @@ def model_keyboard(models: list[dict[str, str]], page: int = 0) -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def sessions_menu_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
+    """Titled session buttons plus new / delete / context actions."""
+    from telegram_cursor_agent.telegram.main_menu import sessions_submenu_keyboard
+
+    rows = list(session_resume_keyboard(sessions).inline_keyboard)
+    for row in sessions_submenu_keyboard().inline_keyboard:
+        if any(button.callback_data == "menu:act:resume" for button in row):
+            continue
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def session_resume_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for index, session in enumerate(sessions, start=1):
         marker = "● " if session.status == "active" else ""
         label = (
-            f"{marker}{index}. {session_display_name(session)} — "
-            f"{workspace_label(session.workspace_path)}"
+            f"{marker}{index}. {session_display_name(session)} · "
+            f"{session_engine_name(session)}"
         )
         rows.append([
             InlineKeyboardButton(
@@ -80,8 +92,8 @@ def session_delete_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarku
     rows: list[list[InlineKeyboardButton]] = []
     for index, session in enumerate(sessions, start=1):
         label = (
-            f"{index}. {session_display_name(session)} — "
-            f"{workspace_label(session.workspace_path)}"
+            f"{index}. {session_display_name(session)} · "
+            f"{session_engine_name(session)}"
         )
         rows.append([
             InlineKeyboardButton(

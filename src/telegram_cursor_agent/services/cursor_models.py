@@ -7,6 +7,10 @@ import subprocess
 from pathlib import Path
 
 from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.services.opencode_models import (
+    DEFAULT_OPENCODE_MODEL_ID,
+    merge_opencode_models,
+)
 
 MODELS_FILENAME = "cursor-models.json"
 MODEL_SELECTION_FILENAME = ".cursor_model"
@@ -52,30 +56,38 @@ def resolve_model_file(settings: Settings, workspace: str) -> Path | None:
 
 
 def load_models(settings: Settings) -> list[dict[str, str]]:
+    """Cursor catalog plus keyless OpenCode models.
+
+    A missing or empty Cursor catalog is fine: OpenCode still works before login.
+    """
     path = models_catalog_path(settings)
-    if not path.is_file():
-        raise CursorModelsError(
-            "Каталог моделей не найден. "
-            "На сервере выполни: `uv run python scripts/refresh_cursor_models.py`"
-        )
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CursorModelsError("Не удалось прочитать каталог моделей.") from exc
-    if not isinstance(raw, list) or not raw:
+    raw: list[dict[str, str]] = []
+    if path.is_file():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CursorModelsError("Не удалось прочитать каталог моделей.") from exc
+        if isinstance(parsed, list):
+            raw = [
+                item
+                for item in parsed
+                if isinstance(item, dict) and item.get("id")
+            ]
+    models = merge_opencode_models(raw)
+    if not models:
         raise CursorModelsError("Каталог моделей пуст.")
-    return raw
+    return models
 
 
 def load_selected_model_id(settings: Settings) -> str | None:
     path = model_selection_path(settings)
     if not path.is_file():
-        return None
+        return DEFAULT_OPENCODE_MODEL_ID
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
-        return None
-    return raw or None
+        return DEFAULT_OPENCODE_MODEL_ID
+    return raw or DEFAULT_OPENCODE_MODEL_ID
 
 
 def resolve_model_label(models: list[dict[str, str]], model_id: str) -> str:

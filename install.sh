@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Bootstrap installer. One command on a fresh server:
+# Bootstrap installer. One command:
 #
-#   curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
+#   Ubuntu:  curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
+#   macOS:   curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
+#
+# OpenCode with Big Pickle is ready immediately. Cursor login is not asked;
+# it can be done later in the bot.
 #
 # Optional environment variables:
 #   TCA_GITHUB_REPO    — owner/repo (default: danilax9/telegram-cursor-agent)
@@ -9,7 +13,7 @@
 #   TCA_REPO_BRANCH    — git branch (default: main)
 #   BOT_TOKEN          — skip interactive token prompt
 #   ADMIN_TELEGRAM_ID  — skip interactive admin ID prompt
-#   TCA_SKIP_CURSOR_LOGIN=1 — reuse existing Cursor auth
+#   TCA_CURSOR_LOGIN=1 — also run Cursor login during install
 #   TCA_NONINTERACTIVE=1    — fail instead of prompting
 #
 set -euo pipefail

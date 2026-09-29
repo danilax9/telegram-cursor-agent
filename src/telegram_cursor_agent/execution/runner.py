@@ -155,7 +155,23 @@ class ProcessRunner:
         return count
 
     async def cancel_pid(self, pid: int) -> bool:
-        return await self.cancel(pid)
+        if pid in self._active:
+            return await self.cancel(pid)
+        if pid <= 1:
+            return False
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            return False
+        await asyncio.sleep(0.15)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+        return True
 
 
 async def _iter_stdout_lines(stream: asyncio.StreamReader) -> AsyncIterator[bytes]:

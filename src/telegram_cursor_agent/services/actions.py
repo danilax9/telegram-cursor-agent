@@ -1,6 +1,7 @@
 """Typed deterministic service actions with safe fallback."""
 
 import json
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -37,6 +38,16 @@ from telegram_cursor_agent.services.session_execution import (
 )
 
 logger = get_logger(__name__)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 class ActionResultType(StrEnum):
@@ -156,17 +167,17 @@ class ActionService:
 
     async def _handle_cancel(self, user_id: uuid.UUID, *_args: object) -> ActionResult:
         running = await self._tasks.list_running_for_user(user_id)
-        cancelled = await self._runner.cancel_all()
+        if self._redis is not None:
+            session_exec = SessionExecutionService(self._redis)
+            for task in running:
+                if task.session_id is not None:
+                    await session_exec.consume_pending_redirect(task.session_id)
         for task in running:
             await self._task_queue.publish_cancel(str(task.id))
             await self._tasks.mark_cancelled(task.id)
-        total = cancelled + len(running)
-        if total:
-            return ActionResult(
-                ActionResultType.TEXT,
-                f"Cancelled {total} running process(es).",
-            )
-        return ActionResult(ActionResultType.TEXT, "No running tasks to cancel.")
+        if running:
+            return ActionResult(ActionResultType.TEXT, "Задача отменена.")
+        return ActionResult(ActionResultType.TEXT, "Сейчас нет задачи, которую можно остановить.")
 
     async def _handle_status(self, user_id: uuid.UUID, *_args: object) -> ActionResult:
         pending = await self._confirmations.get_pending_for_user(user_id)
@@ -364,6 +375,7 @@ class ActionService:
         agent_session = await self._sessions.get_or_create_active(
             user_id, workspace, project_id
         )
+        await self._sessions.ensure_title_from_prompt(agent_session, prompt)
         return await self._queue_agent_work(
             user_id=user_id,
             prompt=prompt,
@@ -405,10 +417,24 @@ class ActionService:
                     ActionResultType.ERROR,
                     "Задача уже выполняется. Дождись ответа или отправь cancel.",
                 )
+            running = await self._tasks.get_by_id(running_task_id)
+            original = ""
+            if running is not None and running.payload:
+                try:
+                    original = str(json.loads(running.payload).get("prompt") or "")
+                except json.JSONDecodeError:
+                    original = ""
+            noted = await session_exec.note_redirect_instruction(
+                session_id, prompt, original
+            )
+            payload_dict = {
+                **payload_dict,
+                "original": str(noted.get("original") or original),
+                "instructions": noted.get("instructions") or [prompt],
+            }
             await session_exec.set_pending_redirect(session_id, payload_dict)
             await session_exec.set_state(session_id, SessionExecState.INTERRUPTING)
             await session_exec.publish_redirect(session_id)
-            await self._task_queue.publish_cancel(str(running_task_id))
             logger.info(
                 "redirect_requested",
                 session_id=str(session_id),
@@ -482,6 +508,13 @@ class ActionService:
         live_task_id = await session_exec.get_running_task_id(session_id)
         if live_task_id is not None:
             return live_task_id
+
+        if running_tasks and await session_exec.worker_heartbeat_fresh():
+            return running_tasks[0].id
+
+        for task in running_tasks:
+            if task.process_pid and _pid_alive(task.process_pid):
+                return task.id
 
         for task in running_tasks:
             await self._tasks.mark_failed(

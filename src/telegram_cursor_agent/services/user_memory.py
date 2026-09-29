@@ -26,22 +26,25 @@ Paths appear in `[Persistent memory]` at the start of task prompts (when enabled
 |------|---------|
 | `user.md` | **About the user**: language, timezone, stacks, long-term preferences, stable facts about them |
 | `soul.md` | **Tone**: how to address them, verbosity, boundaries, communication style |
-| `memory.md` | **Important facts**: dated bullets — explicit «запомни» / «remember», or the same fact **twice** in conversation |
+| `memory.md` | **Important facts** the user will need across many chats — dated bullets |
 
-### When to write
+### When to write (your judgment)
 
-**`user.md`** — when you notice a **stable** preference or fact about the user (not a one-off task).
-You may update without them saying «запомни», if it clearly belongs in their profile.
+Do **not** treat repetition in chat as a signal to save. Decide yourself whether a fact belongs in a file.
 
-**`memory.md`** — when they ask to remember, **or** when they stated the same important fact twice (same meaning).
+**`user.md`** — only **stable** traits and preferences (language, stack, how they work), not the current ticket.
 
-**`soul.md`** — when they set tone/persona or you infer a stable communication preference they would want kept.
+**`memory.md`** — when they explicitly ask («запомни», «remember», «на будущее»), **or** when you conclude the fact is **important, durable, and global** (e.g. deploy topology they asked to reuse). Skip one-off tasks, single-project UI choices, and anything they later retract.
+
+**`soul.md`** — when they set tone/persona or you infer a **stable** communication preference they would want kept.
+
+When unsure → **do not write**; you can confirm in chat.
 
 ### Rules
 
 1. Keep entries short; dedupe obvious duplicates.
 2. **Never** store secrets (tokens, passwords, private keys).
-3. Do **not** put project-only prefs here (landing layout, repo details) unless the user says it applies everywhere or asks to remember.
+3. Do **not** put project-only details here unless the user says it applies everywhere or asks to remember.
 4. `memory.md` lines: `- YYYY-MM-DD: fact`
 5. After **you** edit any memory file, add **one short line** in the Telegram reply that you saved it (the bot also sends a separate notice).
 
@@ -61,7 +64,7 @@ _FILE_TEMPLATES: dict[str, str] = {
     ),
     "memory.md": (
         "# Memory log\n\n"
-        "Dated facts: «запомни …», or repeated twice in chat.\n"
+        "Dated facts worth keeping across chats (agent decides; explicit «запомни» always).\n"
         "One fact per line; no secrets.\n"
     ),
 }
@@ -228,7 +231,9 @@ def load_memory_prompt_section(
     parts.append("Use them as follows:")
     parts.append("- `user.md` — about the user; stable prefs (agent may auto-save)")
     parts.append("- `soul.md` — tone and how to communicate")
-    parts.append("- `memory.md` — important facts («запомни» or said twice)")
+    parts.append(
+        "- `memory.md` — durable cross-chat facts (explicit «запомни» or your judgment)",
+    )
     parts.append("")
 
     total = len("\n".join(parts))

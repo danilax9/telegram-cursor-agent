@@ -2,6 +2,7 @@
 
 import fnmatch
 import json
+import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -85,9 +86,11 @@ async def _user_and_session(
 
 
 async def test_build_redirect_prompt_prefix() -> None:
-    text = build_redirect_prompt("сделай B")
+    text = build_redirect_prompt(["сделай B", "и узнай локацию"])
     assert "Предыдущая задача была прервана" in text
     assert "сделай B" in text
+    assert "и узнай локацию" in text
+    assert text.index("сделай B") < text.index("и узнай локацию")
 
 
 async def test_queue_agent_when_idle(
@@ -141,7 +144,7 @@ async def test_redirect_when_session_running(
     assert result.result_type == ActionResultType.REDIRECT_REQUESTED
     assert result.task_id == running.id
     mock_queue.enqueue.assert_not_awaited()
-    mock_queue.publish_cancel.assert_awaited_once_with(str(running.id))
+    mock_queue.publish_cancel.assert_not_awaited()
     pending = await exec_svc.peek_pending_redirect(session_id)
     assert pending is not None
     assert pending["prompt"] == "new instruction"
@@ -264,6 +267,50 @@ async def test_dead_owner_lease_is_not_a_running_turn(
     mock_redis.publish.assert_not_awaited()
 
 
+async def test_redirect_when_container_cannot_see_worker_pid(
+    db_session: AsyncSession,
+    test_settings,
+    runner: ProcessRunner,
+    mock_queue,
+    mock_redis,
+) -> None:
+    """Host worker pid is invisible in the bot container; heartbeat still counts."""
+    user_id, session_id = await _user_and_session(
+        db_session, test_settings, str(test_settings.projects_root)
+    )
+    running = await TaskRepository(db_session).create(
+        user_id=user_id,
+        task_type="agent_prompt",
+        payload=json.dumps({"prompt": "slow"}),
+        session_id=session_id,
+    )
+    await TaskRepository(db_session).mark_running(running.id)
+    hidden_pid = 2**22
+    lease = json.dumps(
+        {"epoch": "epoch", "pid": hidden_pid, "task_id": str(running.id)}
+    )
+    await mock_redis.set("tca:worker:owner", json.dumps({"epoch": "epoch", "pid": hidden_pid}))
+    await mock_redis.set(
+        SESSION_RUNNING_TASK_KEY.format(session_id=session_id),
+        str(running.id),
+    )
+    await mock_redis.set(f"tca:session:{session_id}:running_owner", lease)
+    await mock_redis.set(
+        "tca:health:worker",
+        json.dumps({"pid": hidden_pid, "ts": time.time()}),
+    )
+
+    service = ActionService(
+        db_session, test_settings, runner, mock_queue, mock_redis
+    )
+    result = await service.handle_text(
+        user_id, "new instruction", str(test_settings.projects_root)
+    )
+    assert result.result_type == ActionResultType.REDIRECT_REQUESTED
+    assert result.task_id == running.id
+    mock_queue.publish_cancel.assert_not_awaited()
+
+
 def _worker(settings, session_factory, redis, queue) -> TaskWorker:
     worker = object.__new__(TaskWorker)
     worker._settings = settings
@@ -273,6 +320,7 @@ def _worker(settings, session_factory, redis, queue) -> TaskWorker:
     worker._session_task_map = {}
     worker._current_task_id = None
     worker._active_task_pids = {}
+    worker._cancel_requested = set()
     return worker
 
 

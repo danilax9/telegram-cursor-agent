@@ -9,6 +9,7 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand(command="menu", description="Главное меню с кнопками"),
     BotCommand(command="help", description="Справка по командам"),
     BotCommand(command="memory", description="Просмотр user/soul/memory.md"),
+    BotCommand(command="skills", description="Список установленных скиллов"),
     BotCommand(command="model", description="Выбор модели Cursor"),
     BotCommand(command="new", description="Новая сессия"),
     BotCommand(command="resume", description="Продолжить сессию"),

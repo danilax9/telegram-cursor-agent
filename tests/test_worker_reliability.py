@@ -46,6 +46,7 @@ def _make_worker(settings, session_factory, notifier):
     worker._queue = None
     worker._notifier = notifier
     worker._active_task_pids = {}
+    worker._cancel_requested = set()
     worker._current_task_id = None
     worker._last_watchdog_at = 0.0
     return worker

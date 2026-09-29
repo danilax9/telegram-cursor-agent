@@ -20,6 +20,7 @@ def test_owner_sees_management(test_settings: Settings) -> None:
     flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]
     assert "menu:sub:owner" in flat
     assert "menu:sub:sessions" in flat
+    assert "menu:sub:skills" in flat
     assert "menu:sub:git" in flat
 
 

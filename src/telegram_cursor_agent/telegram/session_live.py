@@ -15,6 +15,7 @@ from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 REDIRECT_STATUS_TEXT = "↪️ Перенаправляю задачу..."
 CONTINUE_STATUS_TEXT = "▶️ Продолжаю с новой инструкцией..."
+REVIEW_STATUS_TEXT = "🔎 Проверяю, что всё сделано..."
 
 
 async def persist_live_message_ref(
@@ -44,6 +45,26 @@ async def edit_session_live_via_notifier(
         return False
     await notifier.edit_live_message(telegram_id, message_id, safe)
     return True
+
+
+async def relocate_live_after_user_message(
+    redis: Redis,  # type: ignore[type-arg]
+    message: Message,
+    session_id: uuid.UUID,
+    text: str,
+) -> None:
+    """Drop the old progress bubble and send a new one under the user's message."""
+    service = SessionExecutionService(redis)
+    ref = await service.get_live_message(session_id)
+    if ref is not None:
+        telegram_id, message_id = ref
+        try:
+            await message.bot.delete_message(chat_id=telegram_id, message_id=message_id)
+        except TelegramBadRequest:
+            pass
+    sent = await message.answer(text)
+    if sent.chat is not None:
+        await service.set_live_message(session_id, sent.chat.id, sent.message_id)
 
 
 async def edit_session_live_via_message(

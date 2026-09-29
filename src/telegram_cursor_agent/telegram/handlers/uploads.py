@@ -16,7 +16,7 @@ from telegram_cursor_agent.agent.sessions import SessionService
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
 from telegram_cursor_agent.telegram.session_live import (
     REDIRECT_STATUS_TEXT,
-    edit_session_live_via_message,
+    relocate_live_after_user_message,
 )
 from telegram_cursor_agent.telegram.typing_indicator import send_typing
 from telegram_cursor_agent.services.image_attachments import PendingImageStore, StoredImage
@@ -80,12 +80,11 @@ async def _reply_action_result(
         await send_typing(message)
         agent_session = await SessionService(db, settings).get_active(user_id)
         if agent_session is not None:
-            await edit_session_live_via_message(
+            await relocate_live_after_user_message(
                 redis_client,
                 message,
                 agent_session.id,
                 REDIRECT_STATUS_TEXT,
-                settings,
             )
         return
     if result.result_type == ActionResultType.TASK_QUEUED:

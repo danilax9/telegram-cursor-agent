@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from telegram_cursor_agent.agent.skills import cursor_skill_name_from_path
+
+SKILL_TOOL_SUMMARY_PREFIX = "📚 Скилл: "
+
 
 def format_tool_call_event(data: dict[str, Any]) -> str | None:
     if str(data.get("type")) != "tool_call":
@@ -42,6 +46,10 @@ def _format_tool(tool_name: str, args: dict[str, Any]) -> str:
 
     if tool_name in {"read", "write", "strReplace", "delete"}:
         path = str(args.get("path", "")).strip()
+        if tool_name == "read":
+            skill_name = cursor_skill_name_from_path(path)
+            if skill_name:
+                return f"{SKILL_TOOL_SUMMARY_PREFIX}{skill_name}"
         return f"🔧 {label}: {_truncate(path or '(file)')}"
 
     if tool_name == "glob":

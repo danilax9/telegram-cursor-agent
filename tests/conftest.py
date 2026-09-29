@@ -30,6 +30,8 @@ def test_settings(tmp_workspace: Path, tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("PROJECTS_ROOT", str(tmp_workspace))
     monkeypatch.setenv("UPLOAD_STORAGE_PATH", str(tmp_path / "uploads"))
     monkeypatch.setenv("SANDBOX_OPEN", "false")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "opencode-config"))
+    monkeypatch.setenv("OPENCODE_STATE_DB", str(tmp_path / "opencode.db"))
     monkeypatch.setenv("SELF_DEPLOY_ENABLED", "false")
     clear_settings_cache()
     return Settings()

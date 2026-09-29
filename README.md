@@ -13,19 +13,28 @@ Production-quality Telegram bot that remotely drives the Cursor CLI coding agent
 
 ## Quick Start
 
-### One-command install (any server)
+### One-command install
+
+Ubuntu:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
 ```
 
-Interactive installer asks for:
+macOS (without sudo; Docker via Colima):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
+```
+
+The installer asks only for:
 
 1. Telegram bot token (from @BotFather)
 2. Your Telegram user ID (from @userinfobot)
-3. Cursor login (opens a browser link)
 
-The script installs Docker, uv, Cursor CLI, starts the bot stack, and registers the systemd worker.
+Cursor login is not requested. OpenCode is installed and selected as **Big Pickle** (`opencode/big-pickle`), so the bot answers immediately. Sign in to Cursor later from the bot menu (Аккаунты), whenever you want.
+
+On Ubuntu the script installs Docker, uv, OpenCode, and a systemd worker. On macOS it uses Homebrew, Colima, and a launchd agent.
 
 From a cloned repo:
 
@@ -37,7 +46,7 @@ bash ~/telegram-cursor-agent/install.sh
 Non-interactive (CI / automation):
 
 ```bash
-BOT_TOKEN='123:abc' ADMIN_TELEGRAM_ID='123456789' TCA_SKIP_CURSOR_LOGIN=1 \
+BOT_TOKEN='123:abc' ADMIN_TELEGRAM_ID='123456789' \
   TCA_NONINTERACTIVE=1 bash ~/telegram-cursor-agent/scripts/install.sh
 ```
 

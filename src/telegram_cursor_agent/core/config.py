@@ -84,6 +84,22 @@ class Settings(BaseSettings):
         default="cursor-agent",
         validation_alias=AliasChoices("CURSOR_CLI_PATH", "CURSOR_AGENT_BIN"),
     )
+    opencode_cli_path: str = Field(
+        default="/usr/local/bin/opencode",
+        validation_alias=AliasChoices("OPENCODE_CLI_PATH"),
+    )
+    opencode_config_dir: Path = Field(
+        default=Path.home() / ".config" / "opencode",
+        validation_alias=AliasChoices("OPENCODE_CONFIG_DIR"),
+    )
+    opencode_state_db: Path = Field(
+        default=Path.home() / ".local" / "share" / "opencode" / "opencode.db",
+        validation_alias=AliasChoices("OPENCODE_STATE_DB"),
+    )
+    opencode_max_steps: int = Field(
+        default=200,
+        validation_alias=AliasChoices("OPENCODE_MAX_STEPS"),
+    )
     cursor_auth_file: Path = Field(
         default=Path.home() / ".config" / "cursor" / "auth.json",
         validation_alias=AliasChoices("CURSOR_AUTH_FILE"),

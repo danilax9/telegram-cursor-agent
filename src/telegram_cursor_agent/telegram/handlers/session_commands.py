@@ -23,7 +23,7 @@ from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
 from telegram_cursor_agent.telegram.session_live import (
     REDIRECT_STATUS_TEXT,
-    edit_session_live_via_message,
+    relocate_live_after_user_message,
 )
 from telegram_cursor_agent.telegram.keyboards import (
     session_delete_keyboard,
@@ -80,12 +80,11 @@ async def _run_cursor_slash_command(
     )
     if result.result_type == ActionResultType.REDIRECT_REQUESTED:
         if agent_session is not None:
-            await edit_session_live_via_message(
+            await relocate_live_after_user_message(
                 redis_client,
                 message,
                 agent_session.id,
                 REDIRECT_STATUS_TEXT,
-                settings,
             )
         return
     if result.result_type == ActionResultType.TASK_QUEUED:

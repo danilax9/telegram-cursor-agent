@@ -18,6 +18,7 @@ from telegram_cursor_agent.services.actions import ActionResultType, ActionServi
 from telegram_cursor_agent.telegram.session_live import (
     REDIRECT_STATUS_TEXT,
     edit_session_live_via_message,
+    relocate_live_after_user_message,
 )
 from telegram_cursor_agent.services.image_attachments import PendingImageStore
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
@@ -88,17 +89,36 @@ async def handle_text_message(
             await message.answer(text)
         return
 
+    if result.message == "Задача отменена.":
+        agent_session = await SessionService(db, settings).get_active(user.id)
+        edited = False
+        if agent_session is not None:
+            try:
+                edited = await edit_session_live_via_message(
+                    redis_client,
+                    message,
+                    agent_session.id,
+                    "Задача отменена.",
+                    settings,
+                )
+            except Exception:
+                edited = False
+        if not edited:
+            await message.answer("Задача отменена.")
+        return
+
     if result.result_type == ActionResultType.REDIRECT_REQUESTED:
         await send_typing(message)
         agent_session = await SessionService(db, settings).get_active(user.id)
         if agent_session is not None:
-            await edit_session_live_via_message(
+            await relocate_live_after_user_message(
                 redis_client,
                 message,
                 agent_session.id,
                 REDIRECT_STATUS_TEXT,
-                settings,
             )
+        else:
+            await message.answer(REDIRECT_STATUS_TEXT)
         return
 
     if result.result_type == ActionResultType.TASK_QUEUED:

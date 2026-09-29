@@ -2,14 +2,40 @@
 
 from pathlib import Path
 
+from telegram_cursor_agent.agent.prompts import (
+    REVIEW_MAX_PROMPT,
+    REVIEW_PASS_PROMPT,
+    cycle_review_mode,
+    review_follow_up,
+    review_marked_ok,
+    strip_review_mark,
+)
 from telegram_cursor_agent.agent.skills import (
     CursorSkill,
     build_skills_routing_rule,
     compose_task_prompt,
     discover_cursor_skills,
     format_skills_index,
+    format_skills_menu,
 )
 from telegram_cursor_agent.core.config import Settings, default_cursor_skills_dirs
+
+
+def test_format_skills_menu_lists_name_and_description() -> None:
+    text = format_skills_menu(
+        [
+            CursorSkill(
+                name="demo-skill",
+                description="Коротко *про* навык и _ещё_ текст.",
+                skill_md=Path("/tmp/SKILL.md"),
+                scope="user",
+            )
+        ]
+    )
+    assert "*Скиллы* — 1" in text
+    assert "`demo-skill`" in text
+    assert "*" not in text.split("—", 1)[1]
+    assert "_" not in text
 
 
 def test_discover_cursor_skills_from_user_dir(
@@ -68,7 +94,7 @@ def test_build_skills_routing_includes_index(
     assert "alwaysApply: true" in rule
     assert "**alpha**" in rule
     assert "Alpha skill" in rule
-    assert "Mandatory routing" in rule
+    assert "Contextual routing" in rule
     assert "does **not** auto-select" in rule
     assert "skills-cursor" in rule
     assert format_skills_index([])
@@ -125,6 +151,7 @@ def test_compose_task_prompt_agent_picks_skills_no_script_preselect(
     assert "telegram-cursor-agent" in landing
     assert "~/.hermes/skills" in landing
     assert "решает агент, не бот" in landing
+    assert "по контексту" in landing
     assert "skills-routing.mdc" in landing
     assert "Обязательные скиллы" not in landing
     assert "List skills only here" not in landing
@@ -142,6 +169,25 @@ def test_compose_task_prompt_agent_picks_skills_no_script_preselect(
 
     system = "[System: Self-deploy finished successfully.]"
     assert compose_task_prompt(settings, workspace, system) == system
+
+
+def test_review_modes_off_on_and_max() -> None:
+    plain = "почини воркер"
+    system = "[System: Self-deploy finished successfully.]"
+    assert cycle_review_mode("off") == "on"
+    assert cycle_review_mode("on") == "max"
+    assert cycle_review_mode("max") == "off"
+    assert review_follow_up("off", plain, 0) is None
+    assert review_follow_up("on", system, 0) is None
+    assert review_follow_up("on", plain, 0) == REVIEW_PASS_PROMPT
+    assert review_follow_up("on", plain, 1) is None
+    assert review_follow_up("max", plain, 0) == REVIEW_MAX_PROMPT
+    assert review_follow_up("max", plain, 4) == REVIEW_MAX_PROMPT
+    assert review_follow_up("max", plain, 5) is None
+    answer = "Готово.\nREVIEW_OK"
+    assert review_marked_ok(answer)
+    assert strip_review_mark(answer) == "Готово."
+    assert not review_marked_ok("REVIEW_OK ещё не всё")
 
 
 def test_default_skills_dir_is_not_cursor_account_home(monkeypatch, tmp_path: Path) -> None:

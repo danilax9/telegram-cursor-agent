@@ -49,8 +49,8 @@ class TaskRepository:
 
     async def mark_completed(self, task_id: uuid.UUID, result: str) -> Task | None:
         task = await self.get_by_id(task_id)
-        if task is None:
-            return None
+        if task is None or task.status not in ("running", "pending"):
+            return task
         task.status = "completed"
         task.result = result
         task.completed_at = datetime.now(UTC)
@@ -59,8 +59,8 @@ class TaskRepository:
 
     async def mark_failed(self, task_id: uuid.UUID, error: str) -> Task | None:
         task = await self.get_by_id(task_id)
-        if task is None:
-            return None
+        if task is None or task.status not in ("running", "pending"):
+            return task
         task.status = "failed"
         task.error = error
         task.completed_at = datetime.now(UTC)

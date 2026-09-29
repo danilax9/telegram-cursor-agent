@@ -12,6 +12,12 @@ def test_help_intent() -> None:
 def test_cancel_intent() -> None:
     intent = parse_intent("cancel")
     assert intent.intent == IntentType.CANCEL
+    assert parse_intent("Стоп").intent == IntentType.CANCEL
+    assert parse_intent("стоп.").intent == IntentType.CANCEL
+    assert parse_intent("стоп пожалуйста").intent == IntentType.AGENT_PROMPT
+    assert parse_intent("Стоп").intent == IntentType.CANCEL
+    assert parse_intent("стоп.").intent == IntentType.CANCEL
+    assert parse_intent("стоп пожалуйста").intent == IntentType.AGENT_PROMPT
 
 
 def test_git_status_intent() -> None:

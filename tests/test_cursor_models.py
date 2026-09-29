@@ -47,10 +47,10 @@ def test_load_models_reads_catalog(host_projects_settings) -> None:
     assert models[0]["id"] == "auto"
 
 
-def test_load_models_missing_file(host_projects_settings) -> None:
+def test_load_models_missing_file_still_lists_opencode(host_projects_settings) -> None:
     settings, _workspace = host_projects_settings
-    with pytest.raises(CursorModelsError):
-        load_models(settings)
+    models = load_models(settings)
+    assert any(item["id"] == "opencode/big-pickle" for item in models)
 
 
 def test_resolve_model_file_uses_projects_root_when_workspace_is_root(
@@ -83,7 +83,9 @@ def test_refresh_roundtrip_writes_loadable_catalog(host_projects_settings) -> No
     settings, _workspace = host_projects_settings
     models = parse_models_output("auto - Auto (default)\n")
     write_models_catalog(settings, models)
-    assert load_models(settings) == models
+    loaded = load_models(settings)
+    assert loaded[: len(models)] == models
+    assert any(item["id"].startswith("opencode/") for item in loaded)
 
 
 def test_catalog_from_models_output_rejects_empty(host_projects_settings) -> None:

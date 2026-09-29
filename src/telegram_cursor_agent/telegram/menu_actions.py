@@ -214,7 +214,33 @@ async def run_menu_action(
         await db.commit()
         return MenuActionResult(
             build_cursor_submenu_text(settings),
-            reply_markup=cursor_submenu_keyboard(user.show_tool_calls_live),
+            reply_markup=cursor_submenu_keyboard(
+                user.show_tool_calls_live,
+                review_mode=user.review_mode,
+            ),
+            back_to="menu:sub:cursor",
+        )
+
+    if action == "toggle_review":
+        users = UserRepository(db)
+        updated = await users.cycle_review_mode(user.id)
+        if updated is not None:
+            user = updated
+        await db.commit()
+        notes = {
+            "off": "Проверка выключена.",
+            "on": "После ответа один проход: проверка, что задача сделана верно.",
+            "max": "Проверка повторяется, пока модель последней строкой не подтвердит, что всё в порядке. Не больше 5 проходов.",
+        }
+        note = notes.get(user.review_mode, notes["off"])
+        return MenuActionResult(
+            f"{build_cursor_submenu_text(settings)}\n\n"
+            f"Review: *{user.review_mode}*. {note} "
+            "Работает и для Cursor, и для OpenCode.",
+            reply_markup=cursor_submenu_keyboard(
+                user.show_tool_calls_live,
+                review_mode=user.review_mode,
+            ),
             back_to="menu:sub:cursor",
         )
 

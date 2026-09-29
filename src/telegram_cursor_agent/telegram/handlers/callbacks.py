@@ -23,9 +23,13 @@ from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.actions import ActionService
 from telegram_cursor_agent.services.confirmations import ConfirmationService
+from telegram_cursor_agent.agent.session_format import session_display_name
+from telegram_cursor_agent.agent.sessions import SessionService, engine_for_model
+from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.services.cursor_models import (
     CursorModelsError,
     load_models,
+    load_selected_model_id,
     resolve_model_label,
     save_selected_model,
 )
@@ -174,8 +178,39 @@ async def handle_model_picker(
     await callback.answer()
 
 
+async def _session_switch_note(
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    telegram_user_id: int,
+    engine: str,
+) -> str:
+    user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
+    if user is None:
+        return ""
+    workspace = await ProjectService(db, settings).resolve_workspace(user)
+    session, action = await SessionService(db, settings).align_to_engine(
+        user.id,
+        engine,
+        workspace,
+        user.active_project_id,
+    )
+    if action == "same":
+        return ""
+    label = "OpenCode" if engine == "opencode" else "Cursor"
+    if action == "created":
+        return f"\n\nНовая сессия {label}. Следующее сообщение начнёт её чат."
+    title = session_display_name(session)
+    return f"\n\nПродолжаю сессию {label}: *{title}*."
+
+
 @router.callback_query(lambda c: c.data and c.data.startswith("model:"))
-async def handle_model(callback: CallbackQuery, settings: Settings) -> None:
+async def handle_model(
+    callback: CallbackQuery,
+    settings: Settings,
+    db: AsyncSession,
+    telegram_user_id: int,
+) -> None:
     raw = callback.data.split(":", 1)[1] if callback.data else "auto"
     from_menu = raw.endswith(":m")
     model = raw[:-2] if from_menu else raw
@@ -187,8 +222,19 @@ async def handle_model(callback: CallbackQuery, settings: Settings) -> None:
         )
     except CursorModelsError:
         label = model
+    previous = load_selected_model_id(settings)
     await asyncio.to_thread(save_selected_model, settings, model)
     await callback.answer(f"✓ {label}")
+    engine_key = engine_for_model(model)
+    engine = "OpenCode" if engine_key == "opencode" else "Cursor"
+    switch_note = ""
+    if engine_for_model(previous) != engine_key:
+        switch_note = await _session_switch_note(
+            db=db,
+            settings=settings,
+            telegram_user_id=telegram_user_id,
+            engine=engine_key,
+        )
     if isinstance(callback.message, Message):
         if from_menu:
             try:
@@ -197,11 +243,14 @@ async def handle_model(callback: CallbackQuery, settings: Settings) -> None:
             except CursorModelsError:
                 display = label
             await callback.message.edit_text(
-                f"*Cursor*\n\nМодель: *{display}*\n\n_Новые сообщения пойдут с этой моделью._",
+                f"*{engine}*\n\nМодель: *{display}*\n\n"
+                f"_Новые сообщения пойдут с этой моделью._{switch_note}",
                 reply_markup=menu_back_keyboard("menu:sub:cursor"),
             )
             return
-        await callback.message.edit_text(f"Модель Cursor: *{label}*")
+        await callback.message.edit_text(
+            f"Модель {engine}: *{label}*{switch_note}"
+        )
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("mcp:"))

@@ -10,6 +10,13 @@ from telegram_cursor_agent.services.cursor_models import (
 )
 
 
+def test_missing_selection_defaults_to_big_pickle(
+    tmp_path: Path, test_settings: Settings
+) -> None:
+    settings = test_settings.model_copy(update={"projects_root": tmp_path})
+    assert load_selected_model_id(settings) == "opencode/big-pickle"
+
+
 def test_load_and_resolve_selected_model(tmp_path: Path, test_settings: Settings) -> None:
     settings = test_settings.model_copy(update={"projects_root": tmp_path})
     save_selected_model(settings, "gpt-5.2")

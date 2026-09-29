@@ -44,6 +44,21 @@ def _is_foreign_skill_path(path: Path) -> bool:
     return bool(_FOREIGN_SKILL_PARTS.intersection(path.parts))
 
 
+def cursor_skill_name_from_path(path: str) -> str | None:
+    """Folder name for a Cursor Agent Skill when path points at SKILL.md."""
+    if not path or not path.strip():
+        return None
+    normalized = path.replace("\\", "/")
+    if not normalized.endswith("SKILL.md"):
+        return None
+    if any(part in normalized for part in ("/.hermes/", "skills-cursor", "plugins/cache")):
+        return None
+    parent = Path(normalized).parent.name
+    if not parent or parent in {"skills", ".cursor"}:
+        return None
+    return parent
+
+
 def _logical_skill_path(skill_md: Path) -> Path:
     """Absolute path that keeps symlinks, so plugin-cache targets stay hidden."""
     path = skill_md.expanduser()
@@ -100,6 +115,27 @@ def discover_cursor_skills(
     return sorted(found.values(), key=lambda item: item.name)
 
 
+def format_skills_menu(skills: list[CursorSkill]) -> str:
+    """Short Telegram list: name plus a one-line description."""
+    if not skills:
+        return "*Скиллы*\n\nПока ничего не установлено."
+    lines = [f"*Скиллы* — {len(skills)}", ""]
+    for skill in skills:
+        description = _menu_description(skill.description)
+        scope = " · проект" if skill.scope == "project" else ""
+        lines.append(f"• `{skill.name}`{scope} — {description}")
+    return "\n".join(lines)
+
+
+def _menu_description(description: str, limit: int = 140) -> str:
+    text = " ".join(description.split())
+    for char in ("*", "_", "`", "[", "]"):
+        text = text.replace(char, "")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def format_skills_index(skills: list[CursorSkill]) -> str:
     if not skills:
         return (
@@ -121,13 +157,14 @@ def _format_skill_selection_mandate() -> str:
         "Бот **не** подбирает скиллы скриптом и **не** встраивает SKILL.md в промпт.\n"
         "1. Открой `.cursor/rules/skills-routing.mdc` в активном workspace — там актуальный **индекс** "
         "(имя + description + путь).\n"
-        "2. Сопоставь задачу пользователя с descriptions; подключи **все** релевантные скиллы "
-        "(для лендинга часто несколько: project `saas-product-landing`, `web-landing-pages`, "
-        "`ui-design-brain`, `modern-web-design`, `frontend-design`, …).\n"
-        "3. Перед правками кода — **Read** полный `SKILL.md` каждого выбранного скилла; "
-        "при необходимости вспомогательные файлы в той же папке (например `components.md`).\n"
+        "2. **Сам** определи по контексту задачи, какие скиллы нужны — пользователю **не обязательно** "
+        "называть их. Сопоставь **главный результат** (лендинг, копирайт, вёрстка, аудит UI, бэкенд…) "
+        "с descriptions в индексе.\n"
+        "3. Перед правками кода — **Read** полный `SKILL.md` **каждого** включённого скилла "
+        "(обычно 1–3; для чистого бэкенда/деплоя часто 0).\n"
         "4. Не открывай Hermes, skills-cursor, plugin cache — только пути из индекса.\n"
-        "5. Для веб-UI после деплоя проверь живой URL; generic AI-slop / «блог 2010» = переделать."
+        "5. Не включай скилл «на всякий случай» и не читай весь индекс подряд — только то, что реально "
+        "нужно для этой задачи."
     )
 
 
@@ -200,17 +237,28 @@ under {skills_dirs} and optionally `<project>/.cursor/skills/`.
 Never open `~/.hermes/skills`, `~/.cursor/skills-cursor`, or plugin caches (`plugins/cache`).
 A skill is yours only if its path appears in this index.
 
-The Telegram bot does **not** auto-select skills. **You** choose what applies from names and descriptions.
+The Telegram bot does **not** auto-select skills. **You** choose from the index by **task context** —
+the user should not have to name skills every time.
 
-### Mandatory routing (every task)
+### Contextual routing (every task)
 
-1. Read the user message and your planned work; scan the **skill index** below.
-2. For **each** skill that applies even partially, **Read the full `SKILL.md`**
-   with the Read tool **before** editing code, running deploys, or destructive shell commands.
-3. Combine multiple skills when the task spans domains
-   (landing page → project `saas-product-landing` if present, plus `web-landing-pages`,
-   `ui-design-brain`, `modern-web-design`, `frontend-design`, `web-ux-a11y` as needed).
-4. When the user asks to **install, update, list, or remove** skills
+1. Before substantive work, read the user message, the project, and your planned deliverable;
+   scan the **skill index** below.
+2. **Infer** which skills apply. Enable every skill whose domain matches the **primary outcome**
+   (not every keyword in a long description). Typical patterns:
+   - **Marketing landing / promo page** → `landing-pages`; add `copywriting` when text or conversion
+     matters; add `impeccable` when visual/UI craft is in scope; `responsive-design` when layout
+     across breakpoints is central.
+   - **Copy / headlines / CTA** → `copywriting`.
+   - **UI polish, redesign, components, visual quality** → `impeccable` (optionally `responsive-design`).
+   - **UI/UX or a11y review** → `web-design-guidelines`.
+   - **Backend, API, Celery, deploy, bugs in non-UI code** → usually **no** frontend skills.
+3. If the user **names** a skill, always include it and read its `SKILL.md`.
+4. **Read the full `SKILL.md`** for each enabled skill before editing code, deploys, or destructive
+   commands. Aim for **1–3** skills on mixed UI tasks; **0** on pure backend/ops.
+5. Avoid both extremes: do not require explicit «use impeccable» every time; do not load the whole
+   index on a vague mention of «site» when the task is clearly one narrow fix.
+6. When the user asks to **install, update, list, or remove** skills
    (`добавь скилл`, `установи skill`, `skill-manager`), read and follow
    **`skill-manager`** (`SKILL.md` path in the index).
 

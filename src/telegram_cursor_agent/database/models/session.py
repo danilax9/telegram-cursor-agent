@@ -26,6 +26,8 @@ class AgentSession(Base, UUIDMixin, TimestampMixin):
         Uuid, ForeignKey("projects.id"), nullable=True
     )
     cursor_chat_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    opencode_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine: Mapped[str | None] = mapped_column(String(20), nullable=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)

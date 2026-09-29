@@ -176,8 +176,76 @@ HELP_TEXT = """Available commands:
 • /access — list who can use the bot (owner only)
 • /access add `id` — grant access to another Telegram account (owner only)
 • /memory — просмотр user.md / soul.md / memory.md (раскрывающиеся цитаты)
+• /skills — список установленных скиллов
 • /start — initialize bot
 """
+
+REVIEW_OK_MARK = "REVIEW_OK"
+MAX_REVIEW_PASSES = 5
+REVIEW_MODES = ("off", "on", "max")
+
+REVIEW_PASS_PROMPT = """\
+Убедись и проверь, что все задачи из прошлого сообщения выполнены корректно и надёжно.
+
+Если что-то сделано не так или не до конца — исправь. Не начинай новое исследование и не повторяй уже пройденный путь. Потом пришли один итоговый ответ в Telegram, без отдельного отчёта о проверке.
+
+Если правок и задачи не было, оставь короткий итог и остановись.
+"""
+
+REVIEW_MAX_PROMPT = """\
+Убедись и проверь, что все задачи из прошлого сообщения выполнены корректно и надёжно.
+
+Если что-то сделано не так или не до конца — исправь. Не начинай новое исследование и не повторяй уже пройденный путь.
+
+Пришли один итоговый ответ в Telegram, без отдельного отчёта о проверке.
+Если после этой проверки всё действительно в порядке, последней строкой ответа напиши ровно REVIEW_OK.
+Если пришлось исправлять и этого может быть недостаточно, не пиши REVIEW_OK.
+"""
+
+
+def normalize_review_mode(mode: str | None) -> str:
+    if mode in REVIEW_MODES:
+        return mode
+    return "off"
+
+
+def cycle_review_mode(mode: str | None) -> str:
+    current = normalize_review_mode(mode)
+    index = REVIEW_MODES.index(current)
+    return REVIEW_MODES[(index + 1) % len(REVIEW_MODES)]
+
+
+def review_marked_ok(output: str) -> bool:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return bool(lines) and lines[-1] == REVIEW_OK_MARK
+
+
+def strip_review_mark(output: str) -> str:
+    lines = output.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip() == REVIEW_OK_MARK:
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
+def review_follow_up(mode: str | None, user_prompt: str, passes_done: int) -> str | None:
+    """Next review run. `on` is one pass, `max` repeats until REVIEW_OK or the cap."""
+    current = normalize_review_mode(mode)
+    if current == "off" or passes_done < 0:
+        return None
+    if user_prompt.lstrip().startswith("[System:"):
+        return None
+    if current == "on":
+        if passes_done >= 1:
+            return None
+        return REVIEW_PASS_PROMPT
+    if passes_done >= MAX_REVIEW_PASSES:
+        return None
+    return REVIEW_MAX_PROMPT
+
 
 SELF_DEPLOY_RULE_CONTENT = """---
 description: Self-deploy and full filesystem access
@@ -206,17 +274,43 @@ from configuration (typically /root/telegram-cursor-agent). User projects live u
 projects_root (typically workspace/).
 """
 
-REDIRECT_INSTRUCTION_PREFIX = (
-    "Предыдущая задача была прервана пользователем. "
-    "Продолжай работу с текущего состояния. "
-    "Новая инструкция пользователя имеет приоритет.\n\n"
-    "Новая инструкция:\n"
-)
+def redirect_prompt_from_payload(pending: dict[str, object]) -> str:
+    raw_instructions = pending.get("instructions")
+    if isinstance(raw_instructions, list) and raw_instructions:
+        instructions = [str(item) for item in raw_instructions]
+    else:
+        instructions = [str(pending.get("prompt") or "")]
+    return build_redirect_prompt(
+        instructions,
+        original=str(pending.get("original") or ""),
+    )
 
 
-def build_redirect_prompt(user_instruction: str) -> str:
-    body = user_instruction.strip()
-    return f"{REDIRECT_INSTRUCTION_PREFIX}{body}"
+def build_redirect_prompt(
+    user_instruction: str | list[str],
+    *,
+    original: str = "",
+) -> str:
+    """Keep every redirect instruction, not only the latest one."""
+    if isinstance(user_instruction, str):
+        instructions = [user_instruction.strip()] if user_instruction.strip() else []
+    else:
+        instructions = [item.strip() for item in user_instruction if item and item.strip()]
+    numbered = "\n".join(
+        f"{index}. {text}" for index, text in enumerate(instructions, start=1)
+    )
+    original_block = ""
+    if original.strip():
+        original_block = f"Исходная задача:\n{original.strip()}\n\n"
+    return (
+        "Предыдущая задача была прервана пользователем. "
+        "Продолжай работу с текущего состояния. "
+        "Учти исходную задачу и все уточнения ниже, по порядку. "
+        "Более позднее уточняет предыдущее и не отменяет его, если это прямо не сказано.\n\n"
+        f"{original_block}"
+        "Уточнения по порядку:\n"
+        f"{numbered}"
+    )
 
 
 CONFIRMATION_PROMPT = (

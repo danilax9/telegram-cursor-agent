@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from enum import StrEnum
 from pathlib import Path
@@ -26,7 +27,10 @@ SESSION_RUNNING_TASK_KEY = "tca:session:{session_id}:running_task"
 SESSION_RUNNING_OWNER_KEY = "tca:session:{session_id}:running_owner"
 SESSION_REDIRECT_PAYLOAD_KEY = "tca:session:{session_id}:redirect_payload"
 SESSION_LIVE_MESSAGE_KEY = "tca:session:{session_id}:live_message"
+SESSION_REDIRECT_INSTRUCTIONS_KEY = "tca:session:{session_id}:redirect_instructions"
 WORKER_OWNER_KEY = "tca:worker:owner"
+WORKER_HEARTBEAT_KEY = "tca:health:worker"
+HEARTBEAT_MAX_AGE_SECONDS = 90
 SESSION_KEY_TTL_SECONDS = 86_400
 _BUSY_STATES = frozenset(
     {
@@ -184,6 +188,44 @@ class SessionExecutionService:
                 continue
         return found
 
+    def _redirect_instructions_key(self, session_id: uuid.UUID) -> str:
+        return SESSION_REDIRECT_INSTRUCTIONS_KEY.format(session_id=session_id)
+
+    async def note_redirect_instruction(
+        self,
+        session_id: uuid.UUID,
+        instruction: str,
+        original: str | None = None,
+    ) -> dict[str, Any]:
+        """Append a redirect instruction. Earlier ones stay until the turn finishes."""
+        key = self._redirect_instructions_key(session_id)
+        data: dict[str, Any] = {"original": "", "instructions": []}
+        raw = await self._redis.get(key)
+        if raw is not None:
+            text = raw.decode() if isinstance(raw, bytes) else str(raw)
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                data = parsed
+        if original and not str(data.get("original") or "").strip():
+            data["original"] = original.strip()
+        instructions = data.get("instructions")
+        if not isinstance(instructions, list):
+            instructions = []
+        body = instruction.strip()
+        if body and (not instructions or instructions[-1] != body):
+            instructions.append(body)
+        data["instructions"] = instructions
+        await self._redis.set(
+            key, json.dumps(data, ensure_ascii=False), ex=SESSION_KEY_TTL_SECONDS
+        )
+        return data
+
+    async def clear_redirect_instructions(self, session_id: uuid.UUID) -> None:
+        await self._redis.delete(self._redirect_instructions_key(session_id))
+
     async def set_pending_redirect(
         self, session_id: uuid.UUID, payload: dict[str, Any]
     ) -> bool:
@@ -261,7 +303,45 @@ class SessionExecutionService:
         lease_pid = _pid_of(owner)
         if lease_pid is None or lease_pid != _pid_of(worker):
             return False
-        return worker_process_alive(lease_pid)
+        if worker_process_alive(lease_pid):
+            return True
+        # The bot runs in a container and cannot see the host worker in /proc.
+        return await self.heartbeat_matches(lease_pid)
+
+    async def worker_heartbeat_fresh(self) -> bool:
+        payload = await self._heartbeat_payload()
+        if payload is None:
+            return False
+        try:
+            ts = float(payload.get("ts", 0))
+        except (TypeError, ValueError):
+            return False
+        return time.time() - ts <= HEARTBEAT_MAX_AGE_SECONDS
+
+    async def heartbeat_matches(self, pid: int) -> bool:
+        """True when this worker pid published a fresh heartbeat."""
+        payload = await self._heartbeat_payload()
+        if payload is None:
+            return False
+        try:
+            beat_pid = int(payload.get("pid", 0))
+            ts = float(payload.get("ts", 0))
+        except (TypeError, ValueError):
+            return False
+        if beat_pid != pid:
+            return False
+        return time.time() - ts <= HEARTBEAT_MAX_AGE_SECONDS
+
+    async def _heartbeat_payload(self) -> dict[str, Any] | None:
+        raw = await self._redis.get(WORKER_HEARTBEAT_KEY)
+        if raw is None:
+            return None
+        text = raw.decode() if isinstance(raw, bytes) else str(raw)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     async def _delete_lease_if_unchanged(
         self, session_id: uuid.UUID, expected: dict[str, Any] | None

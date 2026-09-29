@@ -73,12 +73,17 @@ class SessionRepository:
         workspace_path: str,
         project_id: uuid.UUID | None = None,
         cursor_chat_id: str | None = None,
+        *,
+        engine: str = "cursor",
+        opencode_session_id: str | None = None,
     ) -> AgentSession:
         agent_session = AgentSession(
             user_id=user_id,
             project_id=project_id,
             workspace_path=workspace_path,
             cursor_chat_id=cursor_chat_id,
+            opencode_session_id=opencode_session_id,
+            engine=engine,
             status="active",
             last_active_at=datetime.now(UTC),
         )
@@ -106,6 +111,25 @@ class SessionRepository:
             return None
         agent_session.cursor_chat_id = cursor_chat_id
         agent_session.last_active_at = datetime.now(UTC)
+        await self._session.flush()
+        return agent_session
+
+    async def update_opencode_session_id(
+        self, session_id: uuid.UUID, opencode_session_id: str
+    ) -> AgentSession | None:
+        agent_session = await self.get_by_id(session_id)
+        if agent_session is None:
+            return None
+        agent_session.opencode_session_id = opencode_session_id
+        agent_session.last_active_at = datetime.now(UTC)
+        await self._session.flush()
+        return agent_session
+
+    async def set_title(self, session_id: uuid.UUID, title: str) -> AgentSession | None:
+        agent_session = await self.get_by_id(session_id)
+        if agent_session is None:
+            return None
+        agent_session.title = title
         await self._session.flush()
         return agent_session
 

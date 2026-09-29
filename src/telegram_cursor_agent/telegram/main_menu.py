@@ -101,6 +101,7 @@ def main_menu_keyboard(settings: Settings, telegram_id: int) -> InlineKeyboardMa
         ],
         [
             InlineKeyboardButton(text="❓ Справка", callback_data="menu:sub:help"),
+            InlineKeyboardButton(text="📚 Скиллы", callback_data="menu:sub:skills"),
         ],
     ]
     if owner:
@@ -168,12 +169,21 @@ def git_submenu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def cursor_submenu_keyboard(show_tool_calls_live: bool = False) -> InlineKeyboardMarkup:
+def cursor_submenu_keyboard(
+    show_tool_calls_live: bool = False,
+    *,
+    review_mode: str = "off",
+) -> InlineKeyboardMarkup:
     tool_toggle = (
-        "🔧 Tool calls: вкл"
+        "🔧 Live: tools + скиллы"
         if show_tool_calls_live
-        else "🔧 Tool calls: выкл"
+        else "🔧 Live: tools + скиллы (выкл)"
     )
+    review_labels = {
+        "on": "🔎 Review: вкл",
+        "max": "🔎 Review: max",
+    }
+    review_toggle = review_labels.get(review_mode, "🔎 Review: выкл")
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -188,6 +198,12 @@ def cursor_submenu_keyboard(show_tool_calls_live: bool = False) -> InlineKeyboar
                 InlineKeyboardButton(
                     text=tool_toggle,
                     callback_data="menu:act:toggle_tool_calls",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=review_toggle,
+                    callback_data="menu:act:toggle_review",
                 ),
             ],
             [
@@ -250,6 +266,10 @@ def tasks_submenu_keyboard() -> InlineKeyboardMarkup:
             _back_row(),
         ]
     )
+
+
+def skills_submenu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[_back_row()])
 
 
 def help_submenu_keyboard() -> InlineKeyboardMarkup:

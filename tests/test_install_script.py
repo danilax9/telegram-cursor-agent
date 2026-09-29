@@ -28,6 +28,13 @@ def test_install_script_contains_required_prompts() -> None:
     assert "UV_BIN=" in content
     assert "wait_until_ready" in content
     assert "Нужен root" in content
+    assert "install_opencode" in content
+    assert "opencode/big-pickle" in content
+    assert "opencode.ai/install" in content
+    assert "is_macos" in content
+    assert "install_launch_agent" in content
+    assert "TCA_CURSOR_LOGIN" in content
+    assert "Вход в Cursor не запрашивается" in content
 
 
 def test_bootstrap_script_documents_one_liner() -> None:
@@ -44,3 +51,4 @@ def test_uninstall_scripts_exist() -> None:
     content = (REPO_ROOT / "scripts/uninstall.sh").read_text(encoding="utf-8")
     assert "docker compose down" in content
     assert "systemctl" in content
+    assert "launchctl bootout" in content
