@@ -9,7 +9,7 @@ x-app-environment: &app-environment
   PROJECT_SEARCH_ROOTS: ${PROJECT_SEARCH_ROOTS:-/workspace}
   ALLOWED_PROJECT_ROOTS: ${ALLOWED_PROJECT_ROOTS:-/workspace}
   UPLOAD_STORAGE_PATH: /data/uploads
-  UPLOAD_HOST_PATH: /root/telegram-cursor-agent/data/uploads
+  UPLOAD_HOST_PATH: ${UPLOAD_HOST_PATH:-/root/telegram-cursor-agent/data/uploads}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_JSON: ${LOG_JSON:-false}
   APP_ENV: ${APP_ENV:-production}
@@ -88,9 +88,9 @@ services:
       - ${SELF_REPO_ROOT:-/root/telegram-cursor-agent}:/host-self-repo
       - ./data/uploads:/data/uploads
       - ${CURSOR_AUTH_FILE:-/root/.config/cursor/auth.json}:/root/.config/cursor/auth.json:ro
-      - /root/.cursor:/root/.cursor
-      - /root/.local:/root/.local:ro
-      - /root/.cursor-accounts:/root/.cursor-accounts
+      - ${TCA_HOST_CURSOR_DIR:-/root/.cursor}:/root/.cursor
+      - ${TCA_HOST_LOCAL_DIR:-/root/.local}:/root/.local:ro
+      - ${TCA_HOST_ACCOUNTS_DIR:-/root/.cursor-accounts}:/root/.cursor-accounts
     restart: unless-stopped
 
   worker:

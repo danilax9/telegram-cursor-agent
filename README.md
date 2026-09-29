@@ -21,7 +21,7 @@ Ubuntu:
 curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | sudo bash
 ```
 
-macOS (without sudo; Docker via Colima):
+macOS (without sudo). Docker Desktop is used when it is already installed. Otherwise the script installs Colima with 3 GB of RAM, or 2 GB if that does not start.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/danilax9/telegram-cursor-agent/main/install.sh | bash
@@ -34,7 +34,7 @@ The installer asks only for:
 
 Cursor login is not requested. OpenCode is installed and selected as **Big Pickle** (`opencode/big-pickle`), so the bot answers immediately. Sign in to Cursor later from the bot menu (Аккаунты), whenever you want.
 
-On Ubuntu the script installs Docker, uv, OpenCode, and a systemd worker. On macOS it uses Homebrew, Colima, and a launchd agent.
+On Ubuntu the script installs Docker, uv, OpenCode, and a systemd worker. On macOS it uses the user home directory (not `/root`), Homebrew, Docker Desktop or Colima, and a launchd agent whose `PATH` includes `~/.local/bin` and `~/.opencode/bin`.
 
 From a cloned repo:
 

@@ -35,6 +35,19 @@ def test_install_script_contains_required_prompts() -> None:
     assert "install_launch_agent" in content
     assert "TCA_CURSOR_LOGIN" in content
     assert "Вход в Cursor не запрашивается" in content
+    assert "TCA_HOST_CURSOR_DIR" in content
+    assert "Docker.app" in content
+    assert "--memory 3" in content
+    assert "--memory 4" not in content
+    assert "link_docker_compose_plugin" in content
+    assert 'user/$(id -u)' in content
+    compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "TCA_HOST_CURSOR_DIR" in compose
+    assert "TCA_HOST_LOCAL_DIR" in compose
+    assert "/root/.local:/root/.local" not in compose
+    worker = (REPO_ROOT / "scripts/run-worker.sh").read_text(encoding="utf-8")
+    assert "/opt/homebrew/bin" in worker
+    assert ".colima/default/docker.sock" in worker
 
 
 def test_bootstrap_script_documents_one_liner() -> None:

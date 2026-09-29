@@ -39,7 +39,7 @@ log 'Installing package...'
 log 'Running migrations...'
 \"\$UV_BIN\" run alembic upgrade head >>\"\$LOG_FILE\" 2>&1
 
-if [[ -f deploy/telegram-cursor-agent-worker.service ]]; then
+if [[ \"\$(uname -s)\" != Darwin && -f deploy/telegram-cursor-agent-worker.service ]]; then
   log 'Updating worker unit...'
   cp deploy/telegram-cursor-agent-worker.service /etc/systemd/system/
   systemctl daemon-reload >>\"\$LOG_FILE\" 2>&1 || true

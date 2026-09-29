@@ -180,8 +180,20 @@ def restart_services() -> None:
         check=False,
         timeout=180,
     )
+    service = os.environ.get("WORKER_SERVICE_NAME", "telegram-cursor-agent-worker")
+    if sys.platform == "darwin":
+        uid = os.getuid()
+        for domain in (f"gui/{uid}", f"user/{uid}"):
+            result = subprocess.run(
+                ["launchctl", "kickstart", "-k", f"{domain}/{service}"],
+                check=False,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                return
+        return
     subprocess.run(
-        ["systemctl", "restart", "telegram-cursor-agent-worker"],
+        ["systemctl", "restart", service],
         check=False,
         timeout=60,
     )

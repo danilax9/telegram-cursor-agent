@@ -80,9 +80,11 @@ detect_install_dir() {
 stop_worker_service() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
     local plist="${HOME}/Library/LaunchAgents/${WORKER_SERVICE}.plist"
-    local domain="gui/$(id -u)/${WORKER_SERVICE}"
+    local uid
+    uid="$(id -u)"
     log "Stopping launchd worker ${WORKER_SERVICE}..."
-    launchctl bootout "${domain}" >/dev/null 2>&1 || true
+    launchctl bootout "gui/${uid}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
+    launchctl bootout "user/${uid}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
     if [[ -f "${plist}" ]]; then
       launchctl unload "${plist}" >/dev/null 2>&1 || true
       run rm -f "${plist}"

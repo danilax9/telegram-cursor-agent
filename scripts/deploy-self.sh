@@ -99,7 +99,7 @@ if redis_invoke SET "$WORKER_RESTART_KEY" 1 EX 600 >/dev/null 2>&1; then
   log "Scheduling graceful worker restart after current task..."
 else
   log "Redis unreachable; scheduling delayed worker restart ($WORKER_SERVICE)..."
-  nohup bash -c "sleep 60 && systemctl restart ${WORKER_SERVICE}" >>"$LOG_FILE" 2>&1 &
+  nohup bash -c "sleep 60; if [[ \$(uname -s) == Darwin ]]; then uid=\$(id -u); launchctl kickstart -k gui/\${uid}/${WORKER_SERVICE} || launchctl kickstart -k user/\${uid}/${WORKER_SERVICE}; else systemctl restart ${WORKER_SERVICE}; fi" >>"$LOG_FILE" 2>&1 &
   disown || true
 fi
 

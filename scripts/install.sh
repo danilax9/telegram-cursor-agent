@@ -188,8 +188,12 @@ detect_repo_root() {
 install_system_packages() {
   if is_macos; then
     ensure_brew
-    log "Installing git and curl via Homebrew..."
-    run brew install git curl
+    if need_cmd git && need_cmd curl; then
+      log "git and curl already installed"
+    else
+      log "Installing git and curl via Homebrew..."
+      run brew install git curl
+    fi
     return 0
   fi
   if need_cmd apt-get; then
@@ -242,11 +246,89 @@ install_node_for_mcp() {
   log "npx: /usr/local/bin/npx ($( /usr/local/bin/node -v ))"
 }
 
+link_docker_compose_plugin() {
+  if docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "${HOME}/.docker/cli-plugins"
+  local candidate
+  local candidates=()
+  if need_cmd brew; then
+    candidates+=(
+      "$(brew --prefix)/lib/docker/cli-plugins/docker-compose"
+      "$(brew --prefix)/opt/docker-compose/bin/docker-compose"
+      "$(brew --prefix)/bin/docker-compose"
+    )
+  fi
+  candidates+=(/opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose)
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "${candidate}" ]]; then
+      ln -sfn "${candidate}" "${HOME}/.docker/cli-plugins/docker-compose"
+      break
+    fi
+  done
+  if ! docker compose version >/dev/null 2>&1; then
+    warn "Команда docker compose не заработала. Проверьте плагин docker-compose."
+  fi
+}
+
+wait_for_docker() {
+  local i=0
+  while [[ ${i} -lt 60 ]]; do
+    if docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    i=$((i + 1))
+  done
+  return 1
+}
+
+start_macos_docker() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -d /Applications/Docker.app ]]; then
+    log "Starting Docker Desktop..."
+    open -a Docker || true
+    if wait_for_docker; then
+      return 0
+    fi
+    warn "Docker Desktop не поднялся"
+  fi
+  if ! need_cmd colima; then
+    die "Docker не запущен. На macOS нужен Docker Desktop или Colima."
+  fi
+  log "Starting Colima..."
+  if colima status >/dev/null 2>&1; then
+    colima start
+  elif ! colima start --cpu 2 --memory 3; then
+    warn "Colima не стартовала с 3 ГБ RAM, пробую 2 ГБ"
+    colima start --cpu 2 --memory 2
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker не запущен. На macOS нужен Docker Desktop или Colima."
+  fi
+}
+
 install_docker_macos() {
   if need_cmd docker && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log "Docker already installed"
-    ensure_docker_running
     return 0
+  fi
+  if [[ -d /Applications/Docker.app ]]; then
+    log "Using Docker Desktop"
+    if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+      return 0
+    fi
+    open -a Docker || true
+    if wait_for_docker; then
+      link_docker_compose_plugin
+      if docker compose version >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    warn "Docker Desktop не поднялся, ставлю Colima"
   fi
   ensure_brew
   log "Installing Colima and Docker CLI..."
@@ -254,13 +336,8 @@ install_docker_macos() {
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
     return 0
   fi
-  mkdir -p "${HOME}/.docker/cli-plugins"
-  local compose_bin
-  compose_bin="$(brew --prefix)/opt/docker-compose/bin/docker-compose"
-  if [[ -x "${compose_bin}" ]]; then
-    ln -sfn "${compose_bin}" "${HOME}/.docker/cli-plugins/docker-compose"
-  fi
-  ensure_docker_running
+  link_docker_compose_plugin
+  start_macos_docker
 }
 
 install_docker() {
@@ -286,16 +363,8 @@ ensure_docker_running() {
     return 0
   fi
   if is_macos; then
-    if docker info >/dev/null 2>&1; then
-      return 0
-    fi
-    if need_cmd colima; then
-      log "Starting Colima..."
-      colima start --cpu 2 --memory 4
-    fi
-    if ! docker info >/dev/null 2>&1; then
-      die "Docker не запущен. На macOS нужен Colima или Docker Desktop."
-    fi
+    start_macos_docker
+    link_docker_compose_plugin
     return 0
   fi
   if ! need_cmd docker; then
@@ -611,6 +680,9 @@ APP_ENV=production
 UV_BIN=${UV_BIN}
 CURSOR_MCP_CONFIG_PATH=${HOME}/.cursor/mcp.json
 CURSOR_APPROVE_MCPS=true
+TCA_HOST_CURSOR_DIR=${HOME}/.cursor
+TCA_HOST_LOCAL_DIR=${HOME}/.local
+TCA_HOST_ACCOUNTS_DIR=${CURSOR_ACCOUNTS_DIR}
 EOF
   chmod 600 "${env_file}"
 }
@@ -654,6 +726,7 @@ start_docker_stack() {
     return 0
   fi
   cd "${install_root}"
+  ensure_host_mounts
   set -a
   # shellcheck disable=SC1091
   source "${install_root}/.env"
@@ -661,10 +734,37 @@ start_docker_stack() {
   docker compose up -d --build
 }
 
+ensure_host_mounts() {
+  if [[ "${TCA_DRY_RUN}" == "1" ]]; then
+    return 0
+  fi
+  mkdir -p "${HOME}/.cursor" "${HOME}/.local" "${CURSOR_ACCOUNTS_DIR}" "$(dirname "${CURSOR_AUTH_FILE}")"
+  if [[ -d "${CURSOR_AUTH_FILE}" ]]; then
+    die "Ожидался файл ${CURSOR_AUTH_FILE}, но это каталог. Удалите его и запустите установку снова."
+  fi
+  if [[ ! -e "${CURSOR_AUTH_FILE}" ]]; then
+    printf '%s\n' '{}' >"${CURSOR_AUTH_FILE}"
+  fi
+}
+
+launchd_domain() {
+  local uid
+  uid="$(id -u)"
+  if launchctl print "gui/${uid}" >/dev/null 2>&1; then
+    echo "gui/${uid}"
+    return 0
+  fi
+  if launchctl print "user/${uid}" >/dev/null 2>&1; then
+    echo "user/${uid}"
+    return 0
+  fi
+  echo "gui/${uid}"
+}
+
 install_launch_agent() {
   local install_root="$1"
   local plist="${HOME}/Library/LaunchAgents/${WORKER_SERVICE}.plist"
-  local domain="gui/$(id -u)"
+  local path_value="${HOME}/.local/bin:${HOME}/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   log "Installing launchd worker: ${plist}"
   if [[ "${TCA_DRY_RUN}" == "1" ]]; then
     return 0
@@ -679,6 +779,13 @@ install_launch_agent() {
   <string>${WORKER_SERVICE}</string>
   <key>WorkingDirectory</key>
   <string>${install_root}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>${HOME}</string>
+    <key>PATH</key>
+    <string>${path_value}</string>
+  </dict>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
@@ -688,6 +795,8 @@ install_launch_agent() {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>${install_root}/data/worker.log</string>
   <key>StandardErrorPath</key>
@@ -695,8 +804,14 @@ install_launch_agent() {
 </dict>
 </plist>
 EOF
+  local domain
+  domain="$(launchd_domain)"
   launchctl bootout "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
-  launchctl bootstrap "${domain}" "${plist}"
+  if ! launchctl bootstrap "${domain}" "${plist}"; then
+    domain="user/$(id -u)"
+    launchctl bootout "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
+    launchctl bootstrap "${domain}" "${plist}"
+  fi
   launchctl enable "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
   launchctl kickstart -k "${domain}/${WORKER_SERVICE}" >/dev/null 2>&1 || true
 }
@@ -772,7 +887,8 @@ wait_until_ready() {
       bot_ok=1
     fi
     if is_macos; then
-      if launchctl print "gui/$(id -u)/${WORKER_SERVICE}" 2>/dev/null | grep -q "state = running"; then
+      if launchctl print "gui/$(id -u)/${WORKER_SERVICE}" 2>/dev/null | grep -q "state = running" \
+        || launchctl print "user/$(id -u)/${WORKER_SERVICE}" 2>/dev/null | grep -q "state = running"; then
         worker_ok=1
       fi
     elif systemctl is-active --quiet "${WORKER_SERVICE}"; then
@@ -848,7 +964,11 @@ print_success() {
   echo "  Каталог:     ${install_root}"
   echo "  Bot token:   настроен"
   echo "  Admin IDs:   ${ADMIN_TELEGRAM_ID:-configured}"
-  echo "  Модель:      OpenCode Big Pickle (opencode/big-pickle)"
+  local model_line="opencode/big-pickle"
+  if [[ -f "${install_root}/workspace/.cursor_model" ]]; then
+    model_line="$(tr -d '\n' < "${install_root}/workspace/.cursor_model")"
+  fi
+  echo "  Модель:      ${model_line}"
   echo "  Cursor:      вход не требуется, его можно пройти позже в боте"
   echo ""
   echo "  Сервисы:"
