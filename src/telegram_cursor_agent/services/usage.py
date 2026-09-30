@@ -41,6 +41,26 @@ class CursorUsageError(Exception):
     pass
 
 
+def read_cursor_access_token(path: Path) -> str | None:
+    """Return the stored Cursor access token, or None when there is no session.
+
+    An ``auth.json`` that exists but carries no token (an interrupted
+    ``agent login`` leaves an empty ``{}`` behind) is not a login.
+    """
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    token = data.get("accessToken") or data.get("access_token")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    return None
+
+
 class CursorUsageService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -77,16 +97,7 @@ class CursorUsageService:
 
     @staticmethod
     def _load_access_token_from_file(path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        token = data.get("accessToken") or data.get("access_token")
-        if isinstance(token, str) and token.strip():
-            return token.strip()
-        return None
+        return read_cursor_access_token(path)
 
     def _auth_file_candidates(self, auth_file: Path | None = None) -> list[Path]:
         home = Path.home()

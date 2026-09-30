@@ -20,7 +20,7 @@ from telegram_cursor_agent.core.logging import get_logger
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
-from telegram_cursor_agent.services.usage import CursorUsageError
+from telegram_cursor_agent.services.usage import CursorUsageError, read_cursor_access_token
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
 
 CURSOR_LOGIN_TASK_NOTIFIED = "__cursor_login_notified__"
@@ -336,8 +336,12 @@ class CursorAccountLoginService:
                 )
                 return
 
-            auth_file_exists = await asyncio.to_thread(auth_file.is_file)
-            if process.returncode != 0 or not auth_file_exists:
+            # An interrupted login can leave an empty auth.json behind, so the
+            # file existing is not proof of a session: require a real token.
+            has_token = await asyncio.to_thread(
+                lambda: read_cursor_access_token(auth_file) is not None
+            )
+            if process.returncode != 0 or not has_token:
                 await self._publish_login_end(
                     telegram_id,
                     menu_message,

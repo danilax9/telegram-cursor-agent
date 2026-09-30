@@ -15,6 +15,7 @@ from telegram_cursor_agent.services.usage import (
     CursorUsageError,
     CursorUsageService,
     CursorUsageSnapshot,
+    read_cursor_access_token,
 )
 
 ACTIVE_ACCOUNT_KEY = "tca:active_cursor_account"
@@ -75,7 +76,7 @@ class CursorAccountService:
         return CursorAccountsConfig(accounts=[default])
 
     def logged_in_label(self) -> str | None:
-        """Label of a Cursor account that already has an auth file."""
+        """Label of a Cursor account that holds a real access token."""
         try:
             accounts = self.load_config().accounts
         except (CursorAccountError, OSError, json.JSONDecodeError):
@@ -91,12 +92,21 @@ class CursorAccountService:
             if key in seen:
                 continue
             seen.add(key)
-            try:
-                if path.is_file() and path.stat().st_size > 0:
-                    return label
-            except OSError:
-                continue
+            if self._has_live_login(path):
+                return label
         return None
+
+    @staticmethod
+    def _has_live_login(path: Path) -> bool:
+        """True when the auth file carries a Cursor access token.
+
+        File size alone is not enough: an interrupted ``agent login`` leaves
+        an empty ``{}`` behind, which used to read as a live session.
+        """
+        try:
+            return read_cursor_access_token(path) is not None
+        except OSError:
+            return False
 
     def _logged_in_paths(self) -> list[Path]:
         """Auth files that currently hold a non-empty login."""
@@ -121,24 +131,15 @@ class CursorAccountService:
 
     def is_logged_in(self) -> bool:
         """True when at least one auth file holds a live login."""
-        for path in self._logged_in_paths():
-            try:
-                if path.is_file() and path.stat().st_size > 0:
-                    return True
-            except OSError:
-                continue
-        return False
+        return any(self._has_live_login(path) for path in self._logged_in_paths())
 
     def logged_in_accounts(self) -> list[CursorAccount]:
         """Accounts that still have their own auth file on disk."""
-        result: list[CursorAccount] = []
-        for account in self.list_accounts():
-            try:
-                if account.auth_file.is_file() and account.auth_file.stat().st_size > 0:
-                    result.append(account)
-            except OSError:
-                continue
-        return result
+        return [
+            account
+            for account in self.list_accounts()
+            if self._has_live_login(account.auth_file)
+        ]
 
     async def logout(self) -> None:
         """Drop saved Cursor auth, the account registry and the active pointer."""
@@ -473,7 +474,7 @@ class CursorAccountService:
                 continue
             if await self._is_marked_exhausted(account.id):
                 continue
-            if not account.auth_file.is_file():
+            if not self._has_live_login(account.auth_file):
                 continue
             try:
                 snapshot = await self.fetch_usage(account)

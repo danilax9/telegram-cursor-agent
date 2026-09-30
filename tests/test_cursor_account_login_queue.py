@@ -25,17 +25,48 @@ def _redis_stub() -> MagicMock:
 
 @contextmanager
 def _fake_auth_file():
-    """Pretend the Cursor auth file exists after a successful login."""
+    """Pretend the Cursor auth file holds a real session after a login."""
     real_is_file = Path.is_file
+    real_read_text = Path.read_text
 
     def fake_is_file(self: Path) -> bool:
         return "nonexistent-auth" in str(self) or real_is_file(self)
 
+    def fake_read_text(self: Path, *args, **kwargs) -> str:
+        if "nonexistent-auth" in str(self):
+            return json.dumps({"accessToken": "token-a"})
+        return real_read_text(self, *args, **kwargs)
+
     Path.is_file = fake_is_file  # type: ignore[method-assign]
+    Path.read_text = fake_read_text  # type: ignore[method-assign]
     try:
         yield
     finally:
         Path.is_file = real_is_file  # type: ignore[method-assign]
+        Path.read_text = real_read_text  # type: ignore[method-assign]
+
+
+@contextmanager
+def _empty_auth_file():
+    """An interrupted login: the auth file exists but carries no token."""
+    real_is_file = Path.is_file
+    real_read_text = Path.read_text
+
+    def fake_is_file(self: Path) -> bool:
+        return "nonexistent-auth" in str(self) or real_is_file(self)
+
+    def fake_read_text(self: Path, *args, **kwargs) -> str:
+        if "nonexistent-auth" in str(self):
+            return "{}"
+        return real_read_text(self, *args, **kwargs)
+
+    Path.is_file = fake_is_file  # type: ignore[method-assign]
+    Path.read_text = fake_read_text  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        Path.is_file = real_is_file  # type: ignore[method-assign]
+        Path.read_text = real_read_text  # type: ignore[method-assign]
 
 
 @pytest.mark.asyncio
@@ -247,6 +278,34 @@ async def test_login_success_edits_menu_not_new_message(test_settings) -> None:
     assert args[0] == 42
     assert args[1] == 7
     assert "Вход в Cursor выполнен" in args[2]
+
+
+@pytest.mark.asyncio
+async def test_login_without_token_is_reported_as_failure(test_settings) -> None:
+    """An auth.json with no token must not count as a completed login."""
+    notifier = MagicMock()
+    notifier.edit_live_message = AsyncMock()
+    notifier.send = AsyncMock()
+    service = CursorAccountLoginService(test_settings, _redis_stub(), notifier)
+    service._accounts.register_account = MagicMock()
+    service._terminate_process = AsyncMock()
+
+    process = MagicMock()
+    process.wait = AsyncMock(return_value=0)
+    process.returncode = 0
+
+    with _empty_auth_file():
+        await service._monitor_login(
+            42,
+            "main",
+            process,
+            Path("/tmp/nonexistent-auth.json"),
+            menu_message={"chat_id": 42, "message_id": 7},
+        )
+
+    service._accounts.register_account.assert_not_called()
+    args, _kwargs = notifier.edit_live_message.await_args
+    assert "Не удалось завершить вход" in args[2]
 
 
 @pytest.mark.asyncio

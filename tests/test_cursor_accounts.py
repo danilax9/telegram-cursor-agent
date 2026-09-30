@@ -199,3 +199,66 @@ async def test_is_logged_in_false_without_auth(test_settings, tmp_path: Path) ->
     service = CursorAccountService(test_settings)
     assert service.is_logged_in() is False
     assert service.logged_in_label() is None
+
+
+def test_empty_auth_file_is_not_a_login(test_settings, tmp_path: Path) -> None:
+    """An interrupted `agent login` leaves `{}` behind: that is not a session."""
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    registry = tmp_path / "accounts.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "auto_rotate": True,
+                "usage_threshold_percent": 95,
+                "accounts": [
+                    {
+                        "id": "default",
+                        "label": "Default",
+                        "auth_file": str(auth),
+                        "priority": 0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    test_settings.cursor_accounts_file = registry
+    test_settings.cursor_accounts_dir = tmp_path / "homes"
+    test_settings.cursor_auth_file = tmp_path / "active-auth.json"
+
+    service = CursorAccountService(test_settings)
+
+    assert service.is_logged_in() is False
+    assert service.logged_in_label() is None
+    assert service.logged_in_accounts() == []
+
+    auth.write_text('{"accessToken":"token-a"}', encoding="utf-8")
+
+    assert service.is_logged_in() is True
+    assert service.logged_in_label() == "Default"
+    assert [a.id for a in service.logged_in_accounts()] == ["default"]
+
+
+def test_blank_token_is_not_a_login(test_settings, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"accessToken":"   "}', encoding="utf-8")
+    test_settings.cursor_accounts_file = tmp_path / "missing.json"
+    test_settings.cursor_auth_file = auth
+
+    service = CursorAccountService(test_settings)
+
+    assert service.is_logged_in() is False
+    assert service.logged_in_label() is None
+
+
+def test_malformed_auth_file_is_not_a_login(test_settings, tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text("{not json", encoding="utf-8")
+    test_settings.cursor_accounts_file = tmp_path / "missing.json"
+    test_settings.cursor_auth_file = auth
+
+    service = CursorAccountService(test_settings)
+
+    assert service.is_logged_in() is False
+    assert service.logged_in_label() is None
