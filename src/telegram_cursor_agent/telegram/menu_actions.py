@@ -18,27 +18,43 @@ from telegram_cursor_agent.agent.sessions import SessionError, SessionService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import require_super_admin
 from telegram_cursor_agent.database.models.user import User
+from telegram_cursor_agent.database.repositories.confirmation import ConfirmationRepository
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.database.repositories.user import UserRepository
-from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
-from telegram_cursor_agent.telegram.menu_navigation import build_cursor_submenu_text
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.access import AccessService
 from telegram_cursor_agent.services.actions import ActionService
-from telegram_cursor_agent.database.repositories.confirmation import ConfirmationRepository
-from telegram_cursor_agent.services.cursor_account_login import CursorAccountLoginService
+from telegram_cursor_agent.services.cursor_account_login import (
+    CursorAccountLoginError,
+    CursorAccountLoginService,
+)
 from telegram_cursor_agent.services.cursor_accounts import (
-    CursorAccountService,
     CursorAccountError,
+    CursorAccountService,
 )
 from telegram_cursor_agent.services.cursor_models import CursorModelsError, load_models
 from telegram_cursor_agent.services.mcp_setup import McpSetupService
-from telegram_cursor_agent.services.usage import CursorUsageError, format_usage_message
+from telegram_cursor_agent.services.usage import (
+    CursorUsageError,
+    format_usage_message,
+    usage_dashboard_keyboard,
+)
 from telegram_cursor_agent.telegram.keyboards import (
     session_delete_keyboard,
     session_resume_keyboard,
+)
+from telegram_cursor_agent.telegram.main_menu import (
+    LOGOUT_CONFIRM_TEXT,
+    live_settings_keyboard,
+    logout_confirm_keyboard,
+)
+from telegram_cursor_agent.telegram.menu_input import set_menu_input
+from telegram_cursor_agent.telegram.menu_navigation import (
+    build_live_settings_text,
+    build_mcp_server_view,
+    build_mcp_view,
 )
 from telegram_cursor_agent.telegram.menu_screens import mcp_setup_menu_keyboard
 from telegram_cursor_agent.telegram.model_keyboards import (
@@ -98,6 +114,7 @@ async def run_menu_action(
     task_queue: TaskQueue,
     runner: ProcessRunner,
     redis_client: Redis | None,  # type: ignore[type-arg]
+    menu_message: dict[str, int | str] | None = None,
 ) -> MenuActionResult:
     project_service = ProjectService(db, settings)
     workspace = await project_service.resolve_workspace(user)
@@ -213,12 +230,12 @@ async def run_menu_action(
             user = updated
         await db.commit()
         return MenuActionResult(
-            build_cursor_submenu_text(settings),
-            reply_markup=cursor_submenu_keyboard(
+            build_live_settings_text(user),
+            reply_markup=live_settings_keyboard(
                 user.show_tool_calls_live,
                 review_mode=user.review_mode,
             ),
-            back_to="menu:sub:cursor",
+            back_to="menu:sub:settings",
         )
 
     if action == "toggle_review":
@@ -230,25 +247,28 @@ async def run_menu_action(
         notes = {
             "off": "Проверка выключена.",
             "on": "После ответа один проход: проверка, что задача сделана верно.",
-            "max": "Проверка повторяется, пока модель последней строкой не подтвердит, что всё в порядке. Не больше 5 проходов.",
+            "max": (
+                "Проверка повторяется, пока модель последней строкой не "
+                "подтвердит, что всё в порядке. Не больше 5 проходов."
+            ),
         }
         note = notes.get(user.review_mode, notes["off"])
         return MenuActionResult(
-            f"{build_cursor_submenu_text(settings)}\n\n"
+            f"{build_live_settings_text(user)}\n\n"
             f"Review: *{user.review_mode}*. {note} "
             "Работает и для Cursor, и для OpenCode.",
-            reply_markup=cursor_submenu_keyboard(
+            reply_markup=live_settings_keyboard(
                 user.show_tool_calls_live,
                 review_mode=user.review_mode,
             ),
-            back_to="menu:sub:cursor",
+            back_to="menu:sub:settings",
         )
 
     if action == "model":
         try:
             models = load_models(settings)
         except CursorModelsError as exc:
-            return MenuActionResult(str(exc), back_to="menu:sub:cursor")
+            return MenuActionResult(str(exc), back_to="menu:home")
         picker_state = initial_picker_state(models, settings, menu=True)
         return MenuActionResult(
             model_picker_text(models, picker_state, settings),
@@ -261,16 +281,110 @@ async def run_menu_action(
             active = await accounts.get_active_account()
             snapshot = await accounts.fetch_usage(active)
         except CursorUsageError as exc:
-            return MenuActionResult(str(exc), back_to="menu:sub:cursor")
-        except httpx.HTTPError:
+            return MenuActionResult(str(exc), back_to="menu:sub:settings")
+        except (CursorAccountError, httpx.HTTPError):
             return MenuActionResult(
-                "Не удалось получить лимиты Cursor. Попробуй позже.",
-                back_to="menu:sub:cursor",
+                "Не удалось получить лимиты Cursor. Проверь вход в настройках.",
+                back_to="menu:sub:settings",
             )
         usage_text = format_usage_message(snapshot)
         return MenuActionResult(
-            f"Аккаунт: `{active.id}` ({active.label})\n\n{usage_text}",
-            back_to="menu:sub:cursor",
+            f"Аккаунт: *{active.label}*\n\n{usage_text}",
+            reply_markup=usage_dashboard_keyboard(),
+            back_to="menu:sub:settings",
+        )
+
+    if action == "login":
+        try:
+            require_super_admin(telegram_user_id, settings)
+        except PermissionError:
+            return MenuActionResult("Только владелец.", back_to="menu:sub:settings")
+        account_service = CursorAccountService(settings, redis_client)
+        account_id = await account_service.preferred_login_account_id()
+        try:
+            queue_login = (
+                account_service.should_switch_on_worker()
+                or not login_service.is_cli_available()
+            )
+            if queue_login:
+                text = await login_service.queue_login_start(
+                    db,
+                    task_queue,
+                    user.id,
+                    telegram_user_id,
+                    account_id,
+                    menu_message=menu_message,
+                )
+                return MenuActionResult(text, back_to="menu:sub:settings", await_worker=True)
+            started = await login_service.start_login(
+                telegram_user_id, account_id, menu_message=menu_message
+            )
+            if menu_message is None:
+                await login_service.notify_login_start(telegram_user_id, started)
+                text = "Ссылку для входа отправил отдельным сообщением."
+            else:
+                await login_service.publish_login_start(
+                    telegram_user_id, started, menu_message
+                )
+                text = "Открой ссылку в этом меню."
+        except CursorAccountLoginError as exc:
+            return MenuActionResult(str(exc), back_to="menu:sub:settings")
+        return MenuActionResult(text, back_to="menu:sub:settings")
+
+    if action == "logout":
+        try:
+            require_super_admin(telegram_user_id, settings)
+        except PermissionError:
+            return MenuActionResult("Только владелец.", back_to="menu:sub:settings")
+        return MenuActionResult(
+            LOGOUT_CONFIRM_TEXT,
+            reply_markup=logout_confirm_keyboard(),
+        )
+
+    if action == "logout_go":
+        try:
+            require_super_admin(telegram_user_id, settings)
+        except PermissionError:
+            return MenuActionResult("Только владелец.", back_to="menu:sub:settings")
+        account_service = CursorAccountService(settings, redis_client)
+        if account_service.should_switch_on_worker():
+            text = await login_service.queue_logout(
+                db,
+                task_queue,
+                user.id,
+                telegram_user_id,
+                menu_message=menu_message,
+            )
+            return MenuActionResult(text, back_to="menu:sub:settings", await_worker=True)
+        try:
+            await account_service.logout()
+        except CursorAccountError as exc:
+            return MenuActionResult(str(exc), back_to="menu:sub:settings")
+        return MenuActionResult(
+            "Вышел из Cursor. Войти снова можно кнопкой в настройках.",
+            back_to="menu:sub:settings",
+        )
+
+    if action == "access_add":
+        if redis_client is None:
+            return MenuActionResult(
+                "Сейчас нельзя запросить id. Попробуй ещё раз.",
+                back_to="menu:sub:access",
+            )
+        try:
+            AccessService(db, settings).ensure_can_manage(telegram_user_id)
+        except PermissionError:
+            return MenuActionResult("Только владелец.", back_to="menu:sub:settings")
+        await set_menu_input(
+            redis_client,
+            telegram_user_id,
+            {"kind": "access_add"},
+        )
+        return MenuActionResult(
+            "*Выдать доступ*\n\n"
+            "Пришли следующим сообщением numeric Telegram ID или @username "
+            "(если человек уже писал боту).",
+            back_to="menu:sub:access",
         )
 
     if action == "account_limits":
@@ -279,18 +393,23 @@ async def run_menu_action(
         except PermissionError:
             return MenuActionResult("Только владелец.", back_to="menu:sub:accounts")
         service = CursorAccountService(settings, redis_client)
-        lines = ["*Лимиты всех аккаунтов*", ""]
-        for account in service.list_accounts():
+        cursor_accounts = service.list_accounts()
+        single = len(cursor_accounts) == 1
+        lines = ["*Лимиты аккаунта Cursor*", ""]
+        for account in cursor_accounts:
+            name = account.label if single else f"{account.id} ({account.label})"
             try:
                 snapshot = await service.fetch_usage(account)
-                lines.append(f"*{account.id}* ({account.label})")
+                lines.append(f"*{name}*")
                 lines.append(format_usage_message(snapshot))
                 lines.append("")
             except CursorUsageError as exc:
-                lines.append(f"*{account.id}*: {exc}")
+                lines.append(f"*{name}*: {exc}")
                 lines.append("")
         return MenuActionResult(
-            "\n".join(lines).strip(), back_to="menu:sub:accounts"
+            "\n".join(lines).strip(),
+            reply_markup=usage_dashboard_keyboard(),
+            back_to="menu:sub:accounts",
         )
 
     if action == "account_add_hint":
@@ -308,14 +427,14 @@ async def run_menu_action(
         try:
             require_super_admin(telegram_user_id, settings)
         except PermissionError:
-            return MenuActionResult("Только владелец.", back_to="menu:sub:accounts")
+            return MenuActionResult("Только владелец.", back_to="menu:sub:settings")
         if login_service.is_cli_available():
             text = await login_service.cancel_login(telegram_user_id)
         else:
             text = await login_service.queue_login_cancel(
                 db, task_queue, user.id, telegram_user_id
             )
-        return MenuActionResult(text, back_to="menu:sub:accounts")
+        return MenuActionResult(text, back_to="menu:sub:settings")
 
     if action == "summarize":
         result = await action_service.queue_session_slash_command(
@@ -370,17 +489,16 @@ async def run_menu_action(
         )
 
     if action == "mcp_list":
-        service = McpSetupService(db, settings, runner, task_queue)
-        return MenuActionResult(
-            await service.list_servers(), back_to="menu:sub:mcp"
-        )
+        text, markup = await build_mcp_view(db=db, settings=settings, runner=runner)
+        return MenuActionResult(text, reply_markup=markup)
 
     if action == "deploy_go":
         try:
             require_super_admin(telegram_user_id, settings)
         except PermissionError:
             return MenuActionResult(
-                "Только владелец может запускать deploy.", back_to="menu:sub:deploy"
+                "Только владелец может перезагружать бота.",
+                back_to="menu:sub:settings",
             )
         result = await action_service.queue_deploy(
             user.id,
@@ -388,9 +506,9 @@ async def run_menu_action(
             project_id=user.active_project_id,
         )
         if result.message:
-            return MenuActionResult(result.message, back_to="menu:sub:owner")
+            return MenuActionResult(result.message, back_to="menu:sub:settings")
         return MenuActionResult(
-            "Deploy поставлен в очередь…", back_to="menu:sub:owner"
+            "Перезагрузка поставлена в очередь…", back_to="menu:sub:settings"
         )
 
     if action == "access":
@@ -399,10 +517,10 @@ async def run_menu_action(
             service.ensure_can_manage(telegram_user_id)
         except PermissionError:
             return MenuActionResult(
-                "Только владелец смотрит список доступа.", back_to="menu:sub:owner"
+                "Только владелец смотрит список доступа.", back_to="menu:sub:settings"
             )
         return MenuActionResult(
-            await service.list_access(), back_to="menu:sub:owner"
+            await service.list_access(), back_to="menu:sub:settings"
         )
 
     if action == "access_add_hint":
@@ -411,14 +529,14 @@ async def run_menu_action(
             service.ensure_can_manage(telegram_user_id)
         except PermissionError:
             return MenuActionResult(
-                "Только владелец.", back_to="menu:sub:owner"
+                "Только владелец.", back_to="menu:sub:settings"
             )
         return MenuActionResult(
             "*Выдать доступ*\n\n"
             "Отправь сообщение:\n"
             "`/access add TelegramID`\n\n"
             "TelegramID — числовой id пользователя.",
-            back_to="menu:sub:owner",
+            back_to="menu:sub:settings",
         )
 
     return MenuActionResult("Неизвестное действие меню.", back_to="menu:home")
@@ -434,15 +552,26 @@ async def start_mcp_preset(
     task_queue: TaskQueue,
 ) -> MenuActionResult:
     service = McpSetupService(db, settings, runner, task_queue)
+    if service.is_configured(preset):
+        view = await build_mcp_server_view(
+            preset,
+            db=db,
+            settings=settings,
+            runner=runner,
+            note="Уже установлен.",
+        )
+        if view is not None:
+            return MenuActionResult(view[0], reply_markup=view[1])
     try:
         text, confirmation_id = await service.start_add(user.id, preset)
     except ValueError as exc:
-        return MenuActionResult(str(exc))
+        return MenuActionResult(str(exc), back_to="menu:sub:mcp")
     if confirmation_id is None:
         return MenuActionResult(text, back_to="menu:sub:mcp")
+    can_install = not await service.needs_secrets(confirmation_id)
     return MenuActionResult(
         text,
-        reply_markup=mcp_setup_menu_keyboard(confirmation_id),
+        reply_markup=mcp_setup_menu_keyboard(confirmation_id, can_install=can_install),
         back_to="menu:sub:mcp",
     )
 
@@ -471,7 +600,7 @@ async def switch_cursor_account(
     if not service.should_switch_on_worker():
         account = await service.set_active_account(account_id)
         return MenuActionResult(
-            f"Активный аккаунт: *{account.label}* (`{account.id}`)",
+            f"Активный аккаунт: *{account.label}*",
             refresh_accounts_menu=True,
         )
     text = await login_service.queue_account_switch(

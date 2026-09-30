@@ -6,7 +6,6 @@ DEFAULT_OPENCODE_MODEL_ID = "opencode/big-pickle"
 
 OPENCODE_FREE_MODELS: list[dict[str, str]] = [
     {"id": "opencode/big-pickle", "label": "Big Pickle"},
-    {"id": "opencode/ling-3.0-flash-fin-free", "label": "Ling 3.0 Flash"},
     {"id": "opencode/longcat-2.5-preview-free", "label": "LongCat 2.5"},
     {"id": "opencode/mimo-v2.6-flash-free", "label": "MiMo V2.6 Flash"},
     {"id": "opencode/muse-spark-1.3-contributor-free", "label": "Muse Spark 1.3"},

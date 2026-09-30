@@ -1,5 +1,7 @@
 """Text message handlers."""
 
+from uuid import UUID
+
 from aiogram import Router
 from aiogram.types import Message
 from redis.asyncio import Redis
@@ -7,25 +9,65 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegram_cursor_agent.agent.parser import IntentType, parse_intent
 from telegram_cursor_agent.agent.prompts import CONFIRMATION_PROMPT
+from telegram_cursor_agent.agent.sessions import SessionError, SessionService
 from telegram_cursor_agent.core.config import Settings
 from telegram_cursor_agent.core.security import split_telegram_message
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
-from telegram_cursor_agent.agent.sessions import SessionService
+from telegram_cursor_agent.services.access import AccessError, AccessService
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
+from telegram_cursor_agent.services.image_attachments import PendingImageStore
+from telegram_cursor_agent.services.mcp_setup import McpSetupService
+from telegram_cursor_agent.telegram.keyboards import confirmation_keyboard, mcp_setup_keyboard
+from telegram_cursor_agent.telegram.menu_input import clear_menu_input, peek_menu_input
 from telegram_cursor_agent.telegram.session_live import (
     REDIRECT_STATUS_TEXT,
     edit_session_live_via_message,
     relocate_live_after_user_message,
 )
-from telegram_cursor_agent.services.image_attachments import PendingImageStore
-from telegram_cursor_agent.services.mcp_setup import McpSetupService
-from telegram_cursor_agent.telegram.keyboards import confirmation_keyboard, mcp_setup_keyboard
 from telegram_cursor_agent.telegram.typing_indicator import send_typing
 
 router = Router()
+
+
+async def _apply_menu_input(
+    pending: dict[str, object],
+    text: str,
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    user_id: UUID,
+    telegram_user_id: int,
+) -> tuple[str, bool]:
+    kind = pending.get("kind")
+    if kind == "rename":
+        try:
+            session_id = UUID(str(pending.get("session_id")))
+        except ValueError:
+            return "Некорректная сессия. Открой список ещё раз.", True
+        try:
+            renamed = await SessionService(db, settings).rename(
+                user_id, session_id, text
+            )
+        except SessionError as exc:
+            return str(exc), False
+        title = renamed.title or text.strip()
+        return f"Имя сессии: *{title}*", True
+
+    if kind == "access_add":
+        try:
+            reply = await AccessService(db, settings).grant(
+                telegram_user_id, text.strip()
+            )
+        except PermissionError:
+            return "Только владелец может выдавать доступ.", True
+        except AccessError as exc:
+            return str(exc), False
+        return reply, True
+
+    return "Это сообщение ушло в меню. Открой раздел ещё раз.", True
 
 
 @router.message()
@@ -47,6 +89,24 @@ async def handle_text_message(
         await message.answer("Please send /start first.")
         return
 
+    if message.text.startswith("/"):
+        await clear_menu_input(redis_client, telegram_user_id)
+    else:
+        pending = await peek_menu_input(redis_client, telegram_user_id)
+        if pending is not None:
+            reply, done = await _apply_menu_input(
+                pending,
+                message.text,
+                db=db,
+                settings=settings,
+                user_id=user.id,
+                telegram_user_id=telegram_user_id,
+            )
+            if done:
+                await clear_menu_input(redis_client, telegram_user_id)
+            await message.answer(reply)
+            return
+
     mcp_setup = McpSetupService(db, settings, runner, task_queue)
     mcp_reply = await mcp_setup.try_handle_pending_message(user.id, message.text)
     if mcp_reply is not None:
@@ -60,8 +120,8 @@ async def handle_text_message(
     image_attachments = None
     if intent.intent == IntentType.AGENT_PROMPT:
         await send_typing(message)
-        pending = PendingImageStore(redis_client)
-        image_attachments = await pending.get_and_clear(user.id)
+        image_store = PendingImageStore(redis_client)
+        image_attachments = await image_store.get_and_clear(user.id)
         if not image_attachments:
             image_attachments = None
 

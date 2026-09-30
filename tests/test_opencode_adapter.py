@@ -206,7 +206,51 @@ def test_running_tool_summaries_from_state_db(tmp_path) -> None:
 
 
 def test_verified_models_are_opencode_family() -> None:
-    assert len(OPENCODE_FREE_MODELS) == 8
+    assert OPENCODE_FREE_MODELS
+    ids = [item["id"] for item in OPENCODE_FREE_MODELS]
+    assert len(ids) == len(set(ids))
     for item in OPENCODE_FREE_MODELS:
         assert is_opencode_model(item["id"])
+        assert item["label"]
         assert detect_family(item["id"], item["label"]) == ("opencode", "OpenCode")
+
+
+def test_error_event_is_not_swallowed() -> None:
+    raw = json.dumps(
+        {
+            "type": "error",
+            "sessionID": "ses_err",
+            "error": {
+                "name": "UnknownError",
+                "data": {
+                    "message": "Unexpected server error. Check server logs for details."
+                },
+            },
+        }
+    )
+    events, output, chat_id = _parse_stream_output(raw)
+    assert chat_id == "ses_err"
+    assert output == "Unexpected server error. Check server logs for details."
+    assert events[-1].event_type == "error"
+    assert events[-1].content == output
+
+
+async def test_stderr_is_used_when_stream_has_no_text(
+    test_settings, runner, tmp_workspace
+) -> None:
+    from telegram_cursor_agent.execution.runner import RunResult
+
+    async def fake_run(command, **kwargs):
+        return RunResult(returncode=1, stdout="", stderr="opencode: model not found")
+
+    runner.run = fake_run
+    settings = test_settings.model_copy(
+        update={
+            "projects_root": tmp_workspace,
+            "opencode_cli_path": "/usr/local/bin/opencode",
+        }
+    )
+    result = await OpenCodeAgentAdapter(settings, runner).run_prompt(
+        str(tmp_workspace), "hi"
+    )
+    assert result.output == "opencode: model not found"

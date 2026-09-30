@@ -29,6 +29,7 @@ from telegram_cursor_agent.telegram.model_keyboards import (
 from telegram_cursor_agent.services.usage import (
     CursorUsageError,
     format_usage_message,
+    usage_dashboard_keyboard,
 )
 from telegram_cursor_agent.telegram.menu_navigation import build_home_view
 from telegram_cursor_agent.telegram.messages import START_MESSAGE
@@ -124,11 +125,11 @@ async def cmd_limits(
 
     usage_text = format_usage_message(snapshot)
     text = sanitize_for_telegram(
-        f"Аккаунт: `{active.id}` ({active.label})\n\n{usage_text}",
+        f"Аккаунт: *{active.label}*\n\n{usage_text}",
         settings.cursor_agent_max_output_bytes,
     )
     for chunk in split_telegram_message(text):
-        await message.answer(chunk)
+        await message.answer(chunk, reply_markup=usage_dashboard_keyboard())
 
 
 @router.message(Command("skills"))

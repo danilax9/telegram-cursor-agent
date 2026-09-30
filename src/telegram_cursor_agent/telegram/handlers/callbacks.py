@@ -3,29 +3,23 @@
 import asyncio
 from uuid import UUID
 
-from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from redis.asyncio import Redis
-
+from telegram_cursor_agent.agent.session_format import session_display_name
+from telegram_cursor_agent.agent.sessions import SessionService, engine_for_model
 from telegram_cursor_agent.core.config import Settings
-from telegram_cursor_agent.core.security import split_telegram_message
-from telegram_cursor_agent.telegram.menu_screens import (
-    menu_back_keyboard,
-    merge_markup_with_back,
-    prepare_menu_text,
-)
 from telegram_cursor_agent.database.repositories.task import TaskRepository
 from telegram_cursor_agent.database.repositories.user import UserRepository
 from telegram_cursor_agent.execution.runner import ProcessRunner
+from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
+from telegram_cursor_agent.services.access import AccessError, AccessService
 from telegram_cursor_agent.services.actions import ActionService
 from telegram_cursor_agent.services.confirmations import ConfirmationService
-from telegram_cursor_agent.agent.session_format import session_display_name
-from telegram_cursor_agent.agent.sessions import SessionService, engine_for_model
-from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.services.cursor_models import (
     CursorModelsError,
     load_models,
@@ -41,11 +35,21 @@ from telegram_cursor_agent.telegram.menu_actions import (
     start_mcp_preset,
     switch_cursor_account,
 )
+from telegram_cursor_agent.telegram.menu_input import clear_menu_input
+from telegram_cursor_agent.telegram.main_menu import mcp_delete_confirm_keyboard
+from telegram_cursor_agent.telegram.markdown import md_code_block
 from telegram_cursor_agent.telegram.menu_navigation import (
     build_accounts_menu_view,
     build_home_view,
+    build_mcp_server_view,
+    build_mcp_view,
     build_submenu_view,
     select_project,
+)
+from telegram_cursor_agent.telegram.menu_screens import (
+    menu_back_keyboard,
+    merge_markup_with_back,
+    prepare_menu_text,
 )
 from telegram_cursor_agent.telegram.model_keyboards import (
     ModelPickerState,
@@ -73,6 +77,7 @@ async def handle_session(
     db: AsyncSession,
     settings: Settings,
     telegram_user_id: int,
+    redis_client: Redis,  # type: ignore[type-arg]
 ) -> None:
     if not callback.data or not isinstance(callback.message, Message):
         await callback.answer("Invalid callback")
@@ -87,6 +92,8 @@ async def handle_session(
     except ValueError:
         await callback.answer("Invalid session id")
         return
+    if action != "rename":
+        await clear_menu_input(redis_client, telegram_user_id)
     await callback.answer()
     await handle_session_callback(
         action,
@@ -95,6 +102,7 @@ async def handle_session(
         settings=settings,
         telegram_user_id=telegram_user_id,
         message=callback.message,
+        redis_client=redis_client,
     )
 
 
@@ -159,7 +167,7 @@ async def handle_model_picker(
         await _queue_refresh_models(db, task_queue, user.id, payload=payload)
         await callback.answer("Обновляю каталог…")
         loading_markup = (
-            menu_back_keyboard("menu:sub:cursor") if state.menu else None
+            menu_back_keyboard("menu:home") if state.menu else None
         )
         await callback.message.edit_text(
             "*Модель Cursor*\n\nОбновляю каталог на сервере…",
@@ -245,7 +253,7 @@ async def handle_model(
             await callback.message.edit_text(
                 f"*{engine}*\n\nМодель: *{display}*\n\n"
                 f"_Новые сообщения пойдут с этой моделью._{switch_note}",
-                reply_markup=menu_back_keyboard("menu:sub:cursor"),
+                reply_markup=menu_back_keyboard("menu:home"),
             )
             return
         await callback.message.edit_text(
@@ -398,6 +406,68 @@ async def handle_cancel_task(
     await callback.message.edit_text(text, reply_markup=markup)
 
 
+async def _handle_mcp_menu(
+    callback: CallbackQuery,
+    payload: str,
+    *,
+    db: AsyncSession,
+    settings: Settings,
+    user_id: UUID,
+    runner: ProcessRunner,
+    task_queue: TaskQueue,
+) -> None:
+    assert isinstance(callback.message, Message)
+    action, _, server_id = payload.partition(":")
+    service = McpSetupService(db, settings, runner, task_queue)
+
+    if action == "del":
+        await callback.answer()
+        await callback.message.edit_text(
+            f"🗑 Удалить MCP `{server_id}`?\n\n"
+            "Сервер пропадёт из конфига Cursor вместе с ключами.",
+            reply_markup=mcp_delete_confirm_keyboard(server_id),
+        )
+        return
+
+    if action == "delok":
+        removed = service.remove_server(server_id)
+        await callback.answer("Удалено" if removed else "Уже удалён")
+        text, markup = await build_mcp_view(
+            db=db,
+            settings=settings,
+            runner=runner,
+            note=f"MCP `{server_id}` удалён." if removed else "",
+        )
+        await callback.message.edit_text(text, reply_markup=markup)
+        return
+
+    note = ""
+    if action == "chk":
+        await callback.answer("Проверяю…")
+        result = await service.check_server(user_id, server_id)
+        note = f"*Проверка:*\n{md_code_block(result)}"
+    elif action == "srv":
+        await callback.answer()
+    else:
+        await callback.answer("Неизвестная кнопка")
+        return
+
+    view = await build_mcp_server_view(
+        server_id, db=db, settings=settings, runner=runner, note=note
+    )
+    if view is None:
+        text, markup = await build_mcp_view(
+            db=db,
+            settings=settings,
+            runner=runner,
+            note=f"MCP `{server_id}` не найден.",
+        )
+    else:
+        text, markup = view
+    text = prepare_menu_text(text, settings.cursor_agent_max_output_bytes)
+    await callback.message.edit_text(text, reply_markup=markup)
+
+
 @router.callback_query(_is_general_menu_callback)
 async def handle_menu(
     callback: CallbackQuery,
@@ -419,6 +489,31 @@ async def handle_menu(
         return
 
     data = callback.data
+    await clear_menu_input(redis_client, telegram_user_id)
+
+    if data.startswith("menu:access:rm:"):
+        target = data.removeprefix("menu:access:rm:")
+        service = AccessService(db, settings)
+        try:
+            text = await service.revoke(telegram_user_id, target)
+        except (PermissionError, AccessError) as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+        await callback.answer("Доступ убран")
+        view = await build_submenu_view(
+            "access",
+            db=db,
+            settings=settings,
+            user=user,
+            telegram_user_id=telegram_user_id,
+            redis_client=redis_client,
+        )
+        if view is None:
+            await callback.message.edit_text(text)
+            return
+        body, markup = view
+        await callback.message.edit_text(f"{text}\n\n{body}", reply_markup=markup)
+        return
 
     if data == "menu:home":
         await callback.answer()
@@ -440,6 +535,7 @@ async def handle_menu(
             user=user,
             telegram_user_id=telegram_user_id,
             redis_client=redis_client,
+            runner=runner,
         )
         if view is None:
             await callback.answer("Раздел недоступен", show_alert=True)
@@ -449,11 +545,40 @@ async def handle_menu(
         await callback.message.edit_text(text, reply_markup=markup)
         return
 
+    if data.startswith("menu:mcp:"):
+        await _handle_mcp_menu(
+            callback,
+            data.removeprefix("menu:mcp:"),
+            db=db,
+            settings=settings,
+            user_id=user.id,
+            runner=runner,
+            task_queue=task_queue,
+        )
+        return
+
     if not data.startswith("menu:act:"):
         await callback.answer("Неизвестная кнопка")
         return
 
     payload = data.removeprefix("menu:act:")
+    if payload == "refresh_models":
+        refresh_state = ModelPickerState(menu=True)
+        refresh_payload = refresh_models_payload(
+            refresh_state,
+            callback.message.chat.id,
+            callback.message.message_id,
+        )
+        await _queue_refresh_models(
+            db, task_queue, user.id, payload=refresh_payload
+        )
+        await callback.answer("Обновляю каталог…")
+        await callback.message.edit_text(
+            "*Модели*\n\nОбновляю каталог на сервере…",
+            reply_markup=menu_back_keyboard("menu:home"),
+        )
+        return
+
     action = payload
     if payload.startswith("summarize:"):
         where = payload.split(":", 1)[1]
@@ -472,6 +597,10 @@ async def handle_menu(
         task_queue=task_queue,
         runner=runner,
         redis_client=redis_client,
+        menu_message={
+            "chat_id": callback.message.chat.id,
+            "message_id": callback.message.message_id,
+        },
     )
     text = prepare_menu_text(result.text, settings.cursor_agent_max_output_bytes)
     markup: InlineKeyboardMarkup | None = None

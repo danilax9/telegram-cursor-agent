@@ -55,14 +55,23 @@ def resolve_model_file(settings: Settings, workspace: str) -> Path | None:
     return None
 
 
+def cursor_catalog_is_visible(settings: Settings) -> bool:
+    """Cursor models only make sense while a Cursor login exists."""
+    from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
+
+    return CursorAccountService(settings, None).is_logged_in()
+
+
 def load_models(settings: Settings) -> list[dict[str, str]]:
     """Cursor catalog plus keyless OpenCode models.
 
     A missing or empty Cursor catalog is fine: OpenCode still works before login.
+    Logged out, the Cursor half is hidden — a stale catalog file must not look
+    like a working login.
     """
     path = models_catalog_path(settings)
     raw: list[dict[str, str]] = []
-    if path.is_file():
+    if path.is_file() and cursor_catalog_is_visible(settings):
         try:
             parsed = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:

@@ -74,11 +74,119 @@ class CursorAccountService:
         )
         return CursorAccountsConfig(accounts=[default])
 
+    def logged_in_label(self) -> str | None:
+        """Label of a Cursor account that already has an auth file."""
+        try:
+            accounts = self.load_config().accounts
+        except (CursorAccountError, OSError, json.JSONDecodeError):
+            accounts = []
+        labeled: list[tuple[Path, str]] = []
+        for account in accounts:
+            labeled.append((account.auth_file, account.label))
+            labeled.append((self.isolated_auth_path(account.id), account.label))
+        labeled.append((self._settings.cursor_auth_file, "Cursor"))
+        seen: set[str] = set()
+        for path, label in labeled:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    return label
+            except OSError:
+                continue
+        return None
+
+    def _logged_in_paths(self) -> list[Path]:
+        """Auth files that currently hold a non-empty login."""
+        try:
+            config = self.load_config()
+        except (CursorAccountError, OSError, json.JSONDecodeError):
+            config = None
+        paths: list[Path] = [self._settings.cursor_auth_file]
+        if config is not None:
+            for account in config.accounts:
+                paths.append(account.auth_file)
+                paths.append(self.isolated_auth_path(account.id))
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
+
+    def is_logged_in(self) -> bool:
+        """True when at least one auth file holds a live login."""
+        for path in self._logged_in_paths():
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def logged_in_accounts(self) -> list[CursorAccount]:
+        """Accounts that still have their own auth file on disk."""
+        result: list[CursorAccount] = []
+        for account in self.list_accounts():
+            try:
+                if account.auth_file.is_file() and account.auth_file.stat().st_size > 0:
+                    result.append(account)
+            except OSError:
+                continue
+        return result
+
+    async def logout(self) -> None:
+        """Drop saved Cursor auth, the account registry and the active pointer."""
+        paths = self._logged_in_paths()
+        config: CursorAccountsConfig | None
+        try:
+            config = self.load_config()
+        except (CursorAccountError, OSError, json.JSONDecodeError):
+            config = None
+        for path in paths:
+            try:
+                if path.is_file():
+                    path.unlink()
+            except OSError as exc:
+                raise CursorAccountError(f"Не удалось выйти из Cursor: {exc}") from exc
+        # An empty list would make load_config raise, so drop the registry file.
+        accounts_file = self._settings.cursor_accounts_file
+        try:
+            if accounts_file.is_file():
+                accounts_file.unlink()
+        except OSError as exc:
+            raise CursorAccountError(f"Не удалось выйти из Cursor: {exc}") from exc
+        if self._redis is not None:
+            await self._redis.delete(ACTIVE_ACCOUNT_KEY)
+            for account in config.accounts if config is not None else []:
+                await self._redis.delete(f"{EXHAUSTED_ACCOUNT_PREFIX}{account.id}")
+
+    async def preferred_login_account_id(self) -> str:
+        active_id = await self._get_active_account_id()
+        if active_id:
+            return active_id
+        try:
+            accounts = self.load_config().accounts
+        except (CursorAccountError, OSError, json.JSONDecodeError):
+            return "default"
+        if accounts:
+            return accounts[0].id
+        return "default"
+
     def list_accounts(self) -> list[CursorAccount]:
         config = self.load_config()
-        normalized = [
-            self.ensure_account_auth_isolated(account) for account in config.accounts
-        ]
+        normalized: list[CursorAccount] = []
+        for account in config.accounts:
+            try:
+                normalized.append(self.ensure_account_auth_isolated(account))
+            except CursorAccountError:
+                # Logged out: listing must still work, the caller checks auth itself.
+                normalized.append(account)
         return sorted(normalized, key=lambda account: account.priority)
 
     def isolated_auth_path(self, account_id: str) -> Path:
@@ -307,8 +415,10 @@ class CursorAccountService:
 
     async def format_accounts_message(self) -> str:
         active = await self.get_active_account()
+        accounts = self.list_accounts()
+        single = len(accounts) == 1
         lines = ["*Аккаунты Cursor*", ""]
-        for account in self.list_accounts():
+        for account in accounts:
             marker = "✓ " if account.id == active.id else "• "
             status = ""
             try:
@@ -318,11 +428,12 @@ class CursorAccountService:
                 status = f" — _{exc}_"
             except Exception:
                 status = " — _не удалось получить лимиты_"
-            lines.append(f"{marker}*{account.id}* ({account.label}){status}")
+            name = account.label if single else f"{account.id} ({account.label})"
+            lines.append(f"{marker}*{name}*{status}")
         lines.extend(
             [
                 "",
-                f"Активный: `{active.id}`",
+                f"Активный: *{active.label}*",
                 "",
                 "Команды:",
                 "• `/account use <id>` — переключить",

@@ -47,3 +47,43 @@ def test_parse_snapshot(test_settings) -> None:
     assert round(snapshot.cursor_models.percent_used, 2) == 90.74
     assert round(snapshot.other_models.percent_used, 2) == 19.98
     assert snapshot.included_amount_usd == 20.0
+
+
+def test_format_usage_message_omits_noise() -> None:
+    """No period, no price, no provider notice, no dead link."""
+    from telegram_cursor_agent.services.usage import (
+        CursorUsageSnapshot,
+        UsagePool,
+        format_usage_message,
+    )
+
+    snapshot = CursorUsageSnapshot(
+        plan_name="Pro",
+        plan_price="$20/mo",
+        billing_cycle_start=datetime(2026, 8, 19, tzinfo=UTC),
+        billing_cycle_end=datetime(2026, 9, 19, tzinfo=UTC),
+        cursor_models=UsagePool("Cursor Models (Composer, Grok)", 90.7),
+        other_models=UsagePool("Other Models (API)", 20.0),
+        total_percent_used=84.3,
+        included_amount_usd=20.0,
+        display_message="You've hit your usage limit",
+    )
+    text = format_usage_message(snapshot)
+
+    assert "Период" not in text
+    assert "19.08.2026" not in text
+    assert "Тариф" not in text
+    assert "$20" not in text
+    assert "usage limit" not in text
+    assert "Spending dashboard" not in text
+    assert "http" not in text
+    assert text.startswith("*Лимиты Cursor Pro*")
+
+
+def test_usage_dashboard_keyboard_is_a_url_button() -> None:
+    from telegram_cursor_agent.services.usage import usage_dashboard_keyboard
+
+    buttons = [b for row in usage_dashboard_keyboard().inline_keyboard for b in row]
+    assert len(buttons) == 1
+    assert buttons[0].url == "https://cursor.com/dashboard/spending"
+    assert "Dashboard" in buttons[0].text

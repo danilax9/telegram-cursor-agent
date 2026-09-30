@@ -164,3 +164,38 @@ def test_is_exhausted(test_settings) -> None:
         display_message=None,
     )
     assert service.is_exhausted(snapshot, 95.0) is True
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_auth_registry_and_active_pointer(
+    accounts_file, test_settings, tmp_path: Path
+) -> None:
+    live = test_settings.cursor_auth_file
+    live.write_text('{"accessToken":"token-a"}', encoding="utf-8")
+    redis = AsyncMock()
+    redis.delete = AsyncMock()
+
+    service = CursorAccountService(test_settings, redis)
+    assert service.is_logged_in() is True
+    assert [a.id for a in service.logged_in_accounts()] == ["main", "backup"]
+
+    await service.logout()
+
+    assert service.is_logged_in() is False
+    assert service.logged_in_accounts() == []
+    assert service.logged_in_label() is None
+    assert not live.exists()
+    assert not accounts_file.exists()
+    deleted = {call.args[0] for call in redis.delete.await_args_list}
+    assert "tca:active_cursor_account" in deleted
+    assert "tca:cursor_account_exhausted:main" in deleted
+    assert "tca:cursor_account_exhausted:backup" in deleted
+
+
+@pytest.mark.asyncio
+async def test_is_logged_in_false_without_auth(test_settings, tmp_path: Path) -> None:
+    test_settings.cursor_accounts_file = tmp_path / "missing.json"
+    test_settings.cursor_auth_file = tmp_path / "no-auth.json"
+    service = CursorAccountService(test_settings)
+    assert service.is_logged_in() is False
+    assert service.logged_in_label() is None

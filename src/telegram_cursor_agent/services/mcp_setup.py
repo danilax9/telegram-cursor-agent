@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -22,6 +23,7 @@ from telegram_cursor_agent.services.mcp_research import McpResearchResult, McpRe
 from telegram_cursor_agent.telegram.markdown import md_bold, md_code, md_code_block, md_italic, md_link
 
 MCP_SETUP_ACTION = "mcp_setup"
+MCP_STATUS_TIMEOUT_SECONDS = 10
 
 
 @dataclass
@@ -136,6 +138,49 @@ class McpSetupService:
         await self._confirmations.reject(confirmation_id)
         return "Установка MCP отменена."
 
+    async def server_statuses(self) -> dict[str, str]:
+        """Configured server ids mapped to CLI status ('' when unknown)."""
+        statuses = {server_id: "" for server_id in self._config.list_server_ids()}
+        if not statuses or not self._cli.is_available():
+            return statuses
+        try:
+            output = await asyncio.wait_for(
+                self._cli.list_servers(), timeout=MCP_STATUS_TIMEOUT_SECONDS
+            )
+        except (McpCliError, TimeoutError):
+            return statuses
+        for line in output.splitlines():
+            if ":" not in line:
+                continue
+            server_id, status = line.split(":", 1)
+            server_id = server_id.strip()
+            if server_id in statuses:
+                statuses[server_id] = status.strip()
+        return statuses
+
+    def is_configured(self, server_id: str) -> bool:
+        return self._config.get_server(server_id) is not None
+
+    def remove_server(self, server_id: str) -> bool:
+        return self._config.remove_server(server_id)
+
+    async def check_server(self, user_id: uuid.UUID, server_id: str) -> str:
+        if not self.is_configured(server_id):
+            return f"MCP {md_code(server_id)} не найден в конфиге."
+        if self._cli.is_available():
+            return await self._cli.verify_server(server_id)
+        if self._task_queue is not None:
+            await self._queue_finalize(user_id, server_id, server_id)
+            return "Проверка запущена на сервере, результат придёт сообщением."
+        return "Cursor CLI недоступен — проверить сейчас нельзя."
+
+    async def needs_secrets(self, confirmation_id: uuid.UUID) -> bool:
+        confirmation = await self._confirmations.get_by_id(confirmation_id)
+        if confirmation is None:
+            return False
+        state = McpSetupState.from_dict(json.loads(confirmation.action_payload))
+        return bool(state.result.missing_secrets(state.collected))
+
     async def list_servers(self) -> str:
         configured = self._config.list_server_ids()
         lines = [md_bold("MCP на сервере")]
@@ -240,11 +285,12 @@ class McpSetupService:
             for secret in result.secrets:
                 lines.append(self._format_secret_requirement(secret))
             lines.append(
-                "\nОтправь ключи сообщением, например:\n"
-                f"`{result.secrets[0].name}=...`"
+                "\nОтправь ключи следующим сообщением, например:\n"
+                f"`{result.secrets[0].name}=...`\n"
+                "После этого установлю сам."
             )
         else:
-            lines.append("\nКлючи не нужны — можно установить сразу.")
+            lines.append("\nКлючи не нужны — нажми «Установить».")
         if result.oauth and result.oauth_note:
             lines.append(f"\n*OAuth:* {result.oauth_note}")
         lines.append(f"\nИсточник: {result.source}")

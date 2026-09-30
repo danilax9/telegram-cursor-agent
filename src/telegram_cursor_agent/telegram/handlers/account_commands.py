@@ -15,7 +15,11 @@ from telegram_cursor_agent.services.cursor_account_login import (
     CursorAccountLoginService,
 )
 from telegram_cursor_agent.services.cursor_accounts import CursorAccountError, CursorAccountService
-from telegram_cursor_agent.services.usage import CursorUsageError, format_usage_message
+from telegram_cursor_agent.services.usage import (
+    CursorUsageError,
+    format_usage_message,
+    usage_dashboard_keyboard,
+)
 
 router = Router()
 
@@ -52,12 +56,12 @@ async def cmd_account(
     try:
         if action in {"use", "switch", "set"}:
             if not target:
-                await message.answer("Укажи id: `/account use main`")
+                await message.answer("Укажи id: `/account use <id>`")
                 return
             if not service.should_switch_on_worker():
                 account = await service.set_active_account(target)
                 await message.answer(
-                    f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)"
+                    f"Активный аккаунт Cursor: *{account.label}*"
                 )
                 return
             user = await UserRepository(db).get_by_telegram_id(telegram_user_id)
@@ -71,18 +75,21 @@ async def cmd_account(
             return
 
         if action == "limits":
-            lines = ["*Лимиты всех аккаунтов Cursor*", ""]
-            for account in service.list_accounts():
+            accounts = service.list_accounts()
+            single = len(accounts) == 1
+            lines = ["*Лимиты аккаунта Cursor*", ""]
+            for account in accounts:
+                name = account.label if single else f"{account.id} ({account.label})"
                 try:
                     snapshot = await service.fetch_usage(account)
-                    lines.append(f"*{account.id}* ({account.label})")
+                    lines.append(f"*{name}*")
                     lines.append(format_usage_message(snapshot))
                     lines.append("")
                 except CursorUsageError as exc:
-                    lines.append(f"*{account.id}*: {exc}")
+                    lines.append(f"*{name}*: {exc}")
                     lines.append("")
             for chunk in split_telegram_message("\n".join(lines).strip()):
-                await message.answer(chunk)
+                await message.answer(chunk, reply_markup=usage_dashboard_keyboard())
             return
 
         if action == "cancel":
@@ -101,7 +108,7 @@ async def cmd_account(
 
         if action in {"add", "login", "prepare"}:
             if not target:
-                await message.answer("Укажи id: `/account add backup`")
+                await message.answer("Укажи id: `/account add <id>`")
                 return
             if login_service.is_cli_available():
                 result = await login_service.start_login(telegram_user_id, target)

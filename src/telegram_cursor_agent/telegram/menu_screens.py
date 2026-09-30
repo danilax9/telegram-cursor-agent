@@ -35,8 +35,16 @@ def merge_markup_with_back(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def mcp_setup_menu_keyboard(confirmation_id: UUID) -> InlineKeyboardMarkup:
+def mcp_setup_menu_keyboard(
+    confirmation_id: UUID, *, can_install: bool = True
+) -> InlineKeyboardMarkup:
     rows = [list(row) for row in mcp_setup_keyboard(confirmation_id).inline_keyboard]
+    if not can_install:
+        rows = [
+            [btn for btn in row if not (btn.callback_data or "").startswith("mcp:install:")]
+            for row in rows
+        ]
+        rows = [row for row in rows if row]
     rows.append(menu_back_row("menu:sub:mcp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

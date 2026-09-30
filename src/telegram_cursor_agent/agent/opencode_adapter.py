@@ -113,8 +113,10 @@ class OpenCodeAgentAdapter:
                 watch.cancel()
                 await asyncio.gather(watch, return_exceptions=True)
         events, output, chat_id = _parse_stream_output(result.stdout)
+        if not output and not result.timed_out:
+            output = result.stderr.strip()
         return AgentResult(
-            output=output or ("" if result.timed_out else ""),
+            output=output,
             cursor_chat_id=chat_id or (
                 resume_chat_id if resume_chat_id and resume_chat_id.startswith("ses_") else None
             ),
@@ -249,16 +251,16 @@ class OpenCodeProgress:
             if not summary:
                 return None
             return self._composer.on_tool_call(summary)
-
-    def note_tool(self, summary: str) -> str | None:
-        if self._composer is None or not summary.strip():
-            return None
-        return self._composer.on_tool_call(summary)
         if event_type == "error":
             message = _error_message(data)
             if message:
                 self.error = message
         return None
+
+    def note_tool(self, summary: str) -> str | None:
+        if self._composer is None or not summary.strip():
+            return None
+        return self._composer.on_tool_call(summary)
 
 
 def _is_injected_prompt(text: str) -> bool:

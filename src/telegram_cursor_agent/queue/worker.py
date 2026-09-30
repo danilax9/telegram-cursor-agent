@@ -9,18 +9,21 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
-from redis.asyncio import Redis
-
 from aiogram.types import ReplyMarkupUnion
+from redis.asyncio import Redis
 
 from telegram_cursor_agent.agent.adapter import AgentResult, CursorAgentAdapter
 from telegram_cursor_agent.agent.opencode_adapter import OpenCodeAgentAdapter
 from telegram_cursor_agent.agent.prompts import (
-    redirect_prompt_from_payload,
     normalize_review_mode,
+    redirect_prompt_from_payload,
     review_follow_up,
     review_marked_ok,
     strip_review_mark,
+)
+from telegram_cursor_agent.agent.session_titles import (
+    resume_id_for_engine,
+    saved_chat_kind,
 )
 from telegram_cursor_agent.core.config import get_settings
 from telegram_cursor_agent.core.logging import get_logger, setup_logging
@@ -45,28 +48,12 @@ from telegram_cursor_agent.services.cursor_accounts import (
     CursorAccountError,
     CursorAccountService,
 )
-from telegram_cursor_agent.services.cursor_models import load_selected_model_id
-from telegram_cursor_agent.agent.session_titles import (
-    resume_id_for_engine,
-    saved_chat_kind,
-)
-from telegram_cursor_agent.services.opencode_models import is_opencode_model
 from telegram_cursor_agent.services.cursor_models import (
     REFRESH_MODELS_MENU_UPDATED,
     catalog_from_models_output,
     load_models,
+    load_selected_model_id,
     models_catalog_is_present,
-)
-from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
-from telegram_cursor_agent.telegram.menu_navigation import (
-    build_accounts_menu_view,
-    build_cursor_submenu_text,
-)
-from telegram_cursor_agent.telegram.model_keyboards import (
-    ModelPickerState,
-    model_picker_keyboard,
-    model_picker_text,
-    picker_state_from_payload,
 )
 from telegram_cursor_agent.services.deploy import DeployService
 from telegram_cursor_agent.services.deploy_recovery import DeployRecoveryService
@@ -85,14 +72,15 @@ from telegram_cursor_agent.services.deploy_resume import (
     update_marker_fields,
     write_marker,
 )
-from telegram_cursor_agent.services.mcp_config import McpConfigService
-from telegram_cursor_agent.services.mcp_setup import McpSetupService
 from telegram_cursor_agent.services.health import (
     WORKER_COMPONENT,
     is_transient_delivery_error,
     record_error,
     run_heartbeat,
 )
+from telegram_cursor_agent.services.mcp_config import McpConfigService
+from telegram_cursor_agent.services.mcp_setup import McpSetupService
+from telegram_cursor_agent.services.opencode_models import is_opencode_model
 from telegram_cursor_agent.services.outbound_attachments import (
     OutboundAttachment,
     extract_outbound_attachments,
@@ -100,8 +88,8 @@ from telegram_cursor_agent.services.outbound_attachments import (
 )
 from telegram_cursor_agent.services.runtime_revision import (
     capture_loaded_revision,
-    reload_flag_path,
     reexec_current_process,
+    reload_flag_path,
     revision_drifted,
     should_reload_process,
     source_revision,
@@ -117,16 +105,28 @@ from telegram_cursor_agent.services.user_memory import (
 )
 from telegram_cursor_agent.telegram.keyboards import memory_change_notify_keyboard
 from telegram_cursor_agent.telegram.live_message import (
-    LiveMessageNotifier,
     THINKING_STATUS_TEXT,
+    LiveMessageNotifier,
 )
-from telegram_cursor_agent.telegram.session_live import (
-    CONTINUE_STATUS_TEXT,
-    REVIEW_STATUS_TEXT,
-    REDIRECT_STATUS_TEXT,
-    persist_live_message_ref,
+from telegram_cursor_agent.telegram.main_menu import cursor_submenu_keyboard
+from telegram_cursor_agent.telegram.menu_navigation import (
+    build_accounts_menu_view,
+    build_cursor_submenu_text,
+    build_settings_view,
+)
+from telegram_cursor_agent.telegram.model_keyboards import (
+    ModelPickerState,
+    model_picker_keyboard,
+    model_picker_text,
+    picker_state_from_payload,
 )
 from telegram_cursor_agent.telegram.notifier import TelegramNotifier
+from telegram_cursor_agent.telegram.session_live import (
+    CONTINUE_STATUS_TEXT,
+    REDIRECT_STATUS_TEXT,
+    REVIEW_STATUS_TEXT,
+    persist_live_message_ref,
+)
 
 logger = get_logger(__name__)
 
@@ -725,6 +725,7 @@ class TaskWorker:
             in {
                 "cursor_account_login",
                 "cursor_account_login_cancel",
+                "cursor_account_logout",
                 "cursor_account_switch",
                 "deploy",
             }
@@ -1007,6 +1008,42 @@ class TaskWorker:
             f"{detail}",
         )
 
+    async def _edit_account_menu_after_logout(
+        self,
+        telegram_id: int,
+        menu_message: dict[str, int | str],
+    ) -> None:
+        """Show the logged-out settings screen in the menu message itself."""
+        text = "Вышел из Cursor. Войти снова можно кнопкой ниже."
+        try:
+            chat_id = int(menu_message["chat_id"])
+            message_id = int(menu_message["message_id"])
+        except (KeyError, TypeError, ValueError):
+            await self._notify_safe(telegram_id, text)
+            return
+        try:
+            view = await build_settings_view(
+                settings=self._settings,
+                telegram_user_id=telegram_id,
+                redis_client=self._redis,
+            )
+        except Exception:
+            logger.exception("account_logout_settings_view_failed")
+            await self._notify_safe(telegram_id, text)
+            return
+        base_text, markup = view
+        try:
+            await self._notifier.edit_live_message(
+                chat_id,
+                message_id,
+                f"{base_text}\n\n{text}",
+                reply_markup=markup,
+                rich_markdown=True,
+            )
+        except Exception:
+            logger.exception("account_logout_menu_edit_failed")
+            await self._notify_safe(telegram_id, text)
+
     async def _notify_safe(
         self,
         telegram_id: int | None,
@@ -1179,7 +1216,13 @@ class TaskWorker:
             )
             account_id = str(payload.get("account_id", ""))
             telegram_id = int(payload.get("telegram_id", 0))
-            return await login.start_login_and_notify(telegram_id, account_id)
+            menu_raw = payload.get("menu_message")
+            menu_message = menu_raw if isinstance(menu_raw, dict) else None
+            return await login.start_login_and_notify(
+                telegram_id,
+                account_id,
+                menu_message=menu_message,
+            )
 
         if task.task_type == "cursor_account_login_cancel":
             login = CursorAccountLoginService(
@@ -1187,6 +1230,19 @@ class TaskWorker:
             )
             telegram_id = int(payload.get("telegram_id", 0))
             return await login.cancel_login(telegram_id)
+
+        if task.task_type == "cursor_account_logout":
+            accounts = CursorAccountService(self._settings, self._redis)
+            telegram_id = int(payload.get("telegram_id", 0))
+            try:
+                await accounts.logout()
+            except CursorAccountError as exc:
+                return str(exc)
+            menu_raw = payload.get("menu_message")
+            if isinstance(menu_raw, dict) and telegram_id:
+                await self._edit_account_menu_after_logout(telegram_id, menu_raw)
+                return CURSOR_LOGIN_TASK_NOTIFIED
+            return "Вышел из Cursor. Войти снова можно кнопкой в настройках."
 
         if task.task_type == "cursor_account_switch":
             accounts = CursorAccountService(self._settings, self._redis)
@@ -1215,12 +1271,12 @@ class TaskWorker:
                     logger.exception("account_switch_menu_edit_failed")
                     await self._notify_safe(
                         telegram_id,
-                        f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)",
+                        f"Активный аккаунт Cursor: *{account.label}*",
                     )
             else:
                 await self._notify_safe(
                     telegram_id,
-                    f"Активный аккаунт Cursor: *{account.label}* (`{account.id}`)",
+                    f"Активный аккаунт Cursor: *{account.label}*",
                 )
             return CURSOR_LOGIN_TASK_NOTIFIED
 
@@ -1298,6 +1354,14 @@ class TaskWorker:
     ) -> str:
         use_opencode = is_opencode_model(load_selected_model_id(self._settings))
         accounts = CursorAccountService(self._settings, self._redis)
+        if not use_opencode and not accounts.is_logged_in():
+            model_id = load_selected_model_id(self._settings)
+            logger.info("cursor_login_required", model=model_id)
+            return (
+                f"Нужен вход в Cursor: модель `{model_id}` доступна только "
+                "после авторизации.\n"
+                "Зайди: ⚙️ Настройки → 🔑 Войти через Cursor."
+            )
         switch_notice = ""
         if not use_opencode:
             proactive = await accounts.ensure_healthy_active_account()
@@ -1400,8 +1464,8 @@ class TaskWorker:
                     )
                     if next_account is not None:
                         switch_notice = (
-                            f"Лимит или сессия на `{active.id}` — переключилась на "
-                            f"`{next_account.id}` ({next_account.label}).\n\n"
+                            f"Лимит или сессия на *{active.label}* — "
+                            f"переключилась на *{next_account.label}*.\n\n"
                         )
                         await accounts.activate_account(next_account)
                         agent_result = await self._execute_agent_prompt(

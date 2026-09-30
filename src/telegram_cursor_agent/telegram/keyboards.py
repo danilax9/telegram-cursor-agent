@@ -59,16 +59,64 @@ def model_keyboard(models: list[dict[str, str]], page: int = 0) -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def sessions_menu_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
-    """Titled session buttons plus new / delete / context actions."""
-    from telegram_cursor_agent.telegram.main_menu import sessions_submenu_keyboard
-
-    rows = list(session_resume_keyboard(sessions).inline_keyboard)
-    for row in sessions_submenu_keyboard().inline_keyboard:
-        if any(button.callback_data == "menu:act:resume" for button in row):
-            continue
-        rows.append(row)
+def session_list_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
+    """All sessions. A tap opens actions and does not switch the chat."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, session in enumerate(sessions, start=1):
+        marker = "● " if session.status == "active" else ""
+        label = (
+            f"{marker}{index}. {session_display_name(session)} · "
+            f"{session_engine_name(session)}"
+        )
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"session:menu:{session.id}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(text="✨ Новая", callback_data="menu:act:new"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="← Назад", callback_data="menu:home"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def sessions_menu_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:
+    return session_list_keyboard(sessions)
+
+
+def session_actions_keyboard(session_id: UUID) -> InlineKeyboardMarkup:
+    sid = str(session_id)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="▶️ Перейти",
+                    callback_data=f"session:resume:{sid}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Переименовать",
+                    callback_data=f"session:rename:{sid}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить",
+                    callback_data=f"session:delete:{sid}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="← Назад",
+                    callback_data="menu:sub:sessions",
+                )
+            ],
+        ]
+    )
 
 
 def session_resume_keyboard(sessions: list[AgentSession]) -> InlineKeyboardMarkup:

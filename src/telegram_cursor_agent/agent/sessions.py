@@ -4,13 +4,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegram_cursor_agent.core.config import Settings
-from telegram_cursor_agent.database.models.message import Message
-from telegram_cursor_agent.database.models.session import AgentSession
 from telegram_cursor_agent.agent.session_titles import (
     title_from_cursor_transcript,
     title_from_prompt,
 )
+from telegram_cursor_agent.core.config import Settings
+from telegram_cursor_agent.database.models.message import Message
+from telegram_cursor_agent.database.models.session import AgentSession
 from telegram_cursor_agent.database.repositories.message import MessageRepository
 from telegram_cursor_agent.database.repositories.session import SessionRepository
 from telegram_cursor_agent.execution.sandbox import assert_path_allowed
@@ -173,6 +173,20 @@ class SessionService:
         if activated is None:
             raise SessionError("Не удалось активировать сессию.")
         return activated
+
+    async def rename(
+        self, user_id: uuid.UUID, session_id: uuid.UUID, title: str
+    ) -> AgentSession:
+        agent_session = await self._sessions.get_for_user(session_id, user_id)
+        if agent_session is None or agent_session.status == "deleted":
+            raise SessionError("Сессия не найдена.")
+        clean = " ".join(title.split())
+        if not clean:
+            raise SessionError("Имя не может быть пустым.")
+        updated = await self._sessions.set_title(session_id, clean[:80])
+        if updated is None:
+            raise SessionError("Не удалось переименовать сессию.")
+        return updated
 
     async def delete(
         self, user_id: uuid.UUID, session_id: uuid.UUID

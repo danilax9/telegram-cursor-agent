@@ -33,6 +33,11 @@ def test_settings(tmp_workspace: Path, tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "opencode-config"))
     monkeypatch.setenv("OPENCODE_STATE_DB", str(tmp_path / "opencode.db"))
     monkeypatch.setenv("SELF_DEPLOY_ENABLED", "false")
+    # Isolate Cursor auth paths: without this, tests read the real auth.json
+    # on the host and flip behaviour depending on whether the bot is logged in.
+    monkeypatch.setenv("CURSOR_AUTH_FILE", str(tmp_path / "cursor-home/auth.json"))
+    monkeypatch.setenv("CURSOR_ACCOUNTS_FILE", str(tmp_path / "cursor-accounts.json"))
+    monkeypatch.setenv("CURSOR_ACCOUNTS_DIR", str(tmp_path / "cursor-accounts"))
     clear_settings_cache()
     return Settings()
 

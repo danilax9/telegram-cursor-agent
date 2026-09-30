@@ -14,13 +14,20 @@ MAIN_MENU_HEADER = "*Панель Cursor Agent*"
 
 MAIN_MENU_TEXT = (
     f"{MAIN_MENU_HEADER}\n\n"
-    "Все настройки и команды — кнопками ниже (уровни «Назад»).\n"
+    "Сессии, модели, настройки, MCP и скиллы — кнопками ниже.\n"
     "Задачи агенту — обычным сообщением в чат."
 )
 
 SESSIONS_SUBMENU_TEXT = (
     "*Сессии*\n\n"
-    "Управление чатами Cursor: новая, переключение, удаление, сжатие контекста."
+    "Нажми сессию — откроются действия: перейти, удалить, переименовать."
+)
+
+SETTINGS_SUBMENU_TEXT = "⚙️ *Настройки*"
+
+LIVE_SUBMENU_TEXT = (
+    "*Настройка live*\n\n"
+    "Что показывать, пока задача идёт, и проверять ли ответ перед отправкой."
 )
 
 PROJECTS_SUBMENU_TEXT = (
@@ -38,11 +45,9 @@ CURSOR_SUBMENU_TEXT = (
     "Модель, лимиты и окно контекста."
 )
 
-MCP_SUBMENU_TEXT = (
-    "*MCP*\n\n"
-    "Список и быстрая установка. Свой сервер — сообщением: "
-    "«добавь mcp …» (секреты спросит в чате)."
-)
+MCP_SUBMENU_TEXT = "🔌 *MCP*"
+
+MCP_CALLBACK_MAX = 64
 
 TASKS_SUBMENU_TEXT = (
     "*Задачи и очередь*\n\n"
@@ -56,15 +61,17 @@ HELP_SUBMENU_TEXT = (
 
 OWNER_SUBMENU_TEXT = (
     "*Управление ботом*\n\n"
-    "Только владелец: аккаунты Cursor, доступ пользователей, deploy."
+    "Только владелец: доступ пользователей и перезагрузка."
 )
 
 DEPLOY_CONFIRM_TEXT = (
-    "*Deploy*\n\n"
-    "Переустановка пакета, миграции и перезапуск worker + bot. "
-    "Текущие задачи могут прерваться.\n\n"
+    "*Перезагрузить*\n\n"
+    "Обновление кода, миграции и перезапуск worker + bot. "
+    "Текущая задача может прерваться.\n\n"
     "Продолжить?"
 )
+
+LOGOUT_CONFIRM_TEXT = "*Выйти из Cursor*\n\nВыйти?"
 
 MCP_PRESETS: tuple[tuple[str, str], ...] = (
     ("GitHub", "github"),
@@ -85,39 +92,23 @@ def _back_row(to: str = "menu:home") -> list[InlineKeyboardButton]:
 
 
 def main_menu_keyboard(settings: Settings, telegram_id: int) -> InlineKeyboardMarkup:
-    owner = is_menu_owner(telegram_id, settings)
+    del settings, telegram_id
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text="📂 Сессии", callback_data="menu:sub:sessions"),
-            InlineKeyboardButton(text="📁 Проект", callback_data="menu:sub:projects"),
+            InlineKeyboardButton(text="🧠 Модели", callback_data="menu:sub:models"),
         ],
         [
-            InlineKeyboardButton(text="🔀 Git", callback_data="menu:sub:git"),
-            InlineKeyboardButton(text="🧠 Cursor", callback_data="menu:sub:cursor"),
-        ],
-        [
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:sub:settings"),
             InlineKeyboardButton(text="🔌 MCP", callback_data="menu:sub:mcp"),
-            InlineKeyboardButton(text="📋 Задачи", callback_data="menu:sub:tasks"),
         ],
         [
-            InlineKeyboardButton(text="❓ Справка", callback_data="menu:sub:help"),
             InlineKeyboardButton(text="📚 Скиллы", callback_data="menu:sub:skills"),
         ],
-    ]
-    if owner:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="👑 Управление", callback_data="menu:sub:owner"
-                ),
-            ]
-        )
-    rows.append(
         [
-            InlineKeyboardButton(text="🔄 Обновить", callback_data="menu:home"),
-            InlineKeyboardButton(text="🛑 Отменить задачу", callback_data="task:cancel"),
-        ]
-    )
+            InlineKeyboardButton(text="🛑 Остановить задачу", callback_data="task:cancel"),
+        ],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -126,26 +117,89 @@ def sessions_submenu_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="✨ Новая", callback_data="menu:act:new"),
-                InlineKeyboardButton(
-                    text="▶️ Продолжить", callback_data="menu:act:resume"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить", callback_data="menu:act:delete"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗜 Сжать контекст",
-                    callback_data="menu:act:summarize:sessions",
-                ),
-                InlineKeyboardButton(
-                    text="📐 Контекст",
-                    callback_data="menu:act:context:sessions",
-                ),
             ],
             _back_row(),
+        ]
+    )
+
+
+def settings_submenu_keyboard(
+    *,
+    logged_in: bool,
+    login_pending: bool,
+    owner: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="📊 Лимиты", callback_data="menu:act:limits"),
+            InlineKeyboardButton(text="🔧 Настройка live", callback_data="menu:sub:live"),
+        ],
+    ]
+    if owner:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔐 Доступ к боту", callback_data="menu:sub:access"
+                ),
+                InlineKeyboardButton(
+                    text="🔄 Перезагрузить", callback_data="menu:sub:restart"
+                ),
+            ]
+        )
+    if login_pending:
+        account_row = [
+            InlineKeyboardButton(
+                text="✖️ Отменить вход", callback_data="menu:act:account_cancel"
+            )
+        ]
+    elif logged_in:
+        account_row = [
+            InlineKeyboardButton(
+                text="🚪 Выйти из Cursor", callback_data="menu:act:logout"
+            )
+        ]
+    else:
+        account_row = [
+            InlineKeyboardButton(
+                text="🔑 Войти через Cursor", callback_data="menu:act:login"
+            )
+        ]
+    if owner:
+        rows.append(account_row)
+    rows.append(_back_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def live_settings_keyboard(
+    show_tool_calls_live: bool = False,
+    *,
+    review_mode: str = "off",
+) -> InlineKeyboardMarkup:
+    tool_toggle = (
+        "🔧 Live: вкл"
+        if show_tool_calls_live
+        else "🔧 Live: выкл"
+    )
+    review_labels = {
+        "on": "🔎 Review: вкл",
+        "max": "🔎 Review: max",
+    }
+    review_toggle = review_labels.get(review_mode, "🔎 Review: выкл")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=tool_toggle,
+                    callback_data="menu:act:toggle_tool_calls",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=review_toggle,
+                    callback_data="menu:act:toggle_review",
+                ),
+            ],
+            _back_row("menu:sub:settings"),
         ]
     )
 
@@ -227,16 +281,36 @@ def cursor_submenu_keyboard(
     )
 
 
-def mcp_submenu_keyboard() -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                text="📋 Список MCP", callback_data="menu:act:mcp_list"
-            ),
-        ],
-    ]
+def _mcp_status_icon(status: str) -> str:
+    lowered = status.lower()
+    if lowered.startswith("ready") or lowered.startswith("connected"):
+        return "✅"
+    if not lowered:
+        return "⚪️"
+    return "⚠️"
+
+
+def mcp_submenu_keyboard(
+    statuses: dict[str, str] | None = None,
+) -> InlineKeyboardMarkup:
+    installed = statuses or {}
+    rows: list[list[InlineKeyboardButton]] = []
+    for server_id, status in installed.items():
+        callback = f"menu:mcp:srv:{server_id}"
+        if len(f"menu:mcp:delok:{server_id}") > MCP_CALLBACK_MAX:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{_mcp_status_icon(status)} {server_id}"[:48],
+                    callback_data=callback,
+                )
+            ]
+        )
     preset_row: list[InlineKeyboardButton] = []
     for label, slug in MCP_PRESETS:
+        if slug in installed:
+            continue
         preset_row.append(
             InlineKeyboardButton(
                 text=f"+ {label}",
@@ -250,6 +324,35 @@ def mcp_submenu_keyboard() -> InlineKeyboardMarkup:
         rows.append(preset_row)
     rows.append(_back_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def mcp_server_keyboard(server_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Проверить", callback_data=f"menu:mcp:chk:{server_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🗑 Удалить", callback_data=f"menu:mcp:del:{server_id}"
+                ),
+            ],
+            _back_row("menu:sub:mcp"),
+        ]
+    )
+
+
+def mcp_delete_confirm_keyboard(server_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Да, удалить", callback_data=f"menu:mcp:delok:{server_id}"
+                ),
+            ],
+            _back_row(f"menu:mcp:srv:{server_id}"),
+        ]
+    )
 
 
 def tasks_submenu_keyboard() -> InlineKeyboardMarkup:
@@ -345,7 +448,25 @@ def deploy_confirm_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="← Управление", callback_data="menu:sub:owner"
+                    text="← Настройки", callback_data="menu:sub:settings"
+                ),
+            ],
+        ]
+    )
+
+
+def logout_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Logout is destructive: require an explicit second tap."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🚪 Да, выйти",
+                    callback_data="menu:act:logout_go",
+                ),
+                InlineKeyboardButton(
+                    text="✖️ Отмена",
+                    callback_data="menu:sub:settings",
                 ),
             ],
         ]
@@ -375,7 +496,7 @@ def projects_picker_keyboard(
             ),
         ]
     )
-    rows.append(_back_row())
+    rows.append(_back_row("menu:sub:settings"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -383,12 +504,14 @@ def accounts_switch_keyboard(
     accounts: list[CursorAccount], active_id: str
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    single = len(accounts) == 1
     for account in accounts:
         marker = "✓ " if account.id == active_id else ""
+        text = f"{marker}{account.label}" if single else f"{marker}{account.label} ({account.id})"
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{marker}{account.label} ({account.id})"[:48],
+                    text=text[:48],
                     callback_data=f"menu:acc:{account.id}",
                 )
             ]
@@ -417,6 +540,21 @@ def accounts_switch_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def accounts_logged_out_keyboard() -> InlineKeyboardMarkup:
+    """No Cursor login on disk: offer login, not a switch list."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔑 Войти через Cursor",
+                    callback_data="menu:act:login",
+                )
+            ],
+            _back_row("menu:sub:owner"),
+        ]
+    )
+
+
 STATIC_SUBMENUS: dict[str, tuple[str, object]] = {}
 
 
@@ -427,8 +565,8 @@ def _register_static() -> None:
         {
         "sessions": (SESSIONS_SUBMENU_TEXT, sessions_submenu_keyboard),
         "git": (GIT_SUBMENU_TEXT, git_submenu_keyboard),
+        "restart": (DEPLOY_CONFIRM_TEXT, deploy_confirm_keyboard),
         "cursor": (CURSOR_SUBMENU_TEXT, cursor_submenu_keyboard),
-        "mcp": (MCP_SUBMENU_TEXT, mcp_submenu_keyboard),
         "tasks": (TASKS_SUBMENU_TEXT, tasks_submenu_keyboard),
         "help": (HELP_SUBMENU_TEXT, help_submenu_keyboard),
         "owner": (OWNER_SUBMENU_TEXT, owner_submenu_keyboard),

@@ -20,7 +20,7 @@ from telegram_cursor_agent.services.cursor_models import load_selected_model_id
 PAGE_SIZE = 6
 FAMILY_COLS = 2
 MODEL_COLS = 2
-MENU_BACK_CURSOR = "menu:sub:cursor"
+MENU_BACK_CURSOR = "menu:home"
 
 
 @dataclass(frozen=True)
@@ -373,7 +373,7 @@ def model_picker_keyboard(
         if state.menu:
             back = [
                 InlineKeyboardButton(
-                    text="← Cursor",
+                    text="← Меню",
                     callback_data=MENU_BACK_CURSOR,
                 )
             ]

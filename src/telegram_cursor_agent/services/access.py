@@ -49,12 +49,8 @@ class AccessService:
                 lines.append(f"• {self._format_user(user, user.telegram_id)}")
         lines.extend([
             "",
-            "Добавить:",
-            "• `/access add 123456789`",
-            "• `/access add @username` (если человек уже писал /start)",
-            "• ответь `/access add` на сообщение пользователя",
-            "",
-            "Убрать: `/access remove 123456789`",
+            "Выдать: кнопка «Выдать доступ», затем ID или @username.",
+            "Убрать: кнопка напротив человека.",
         ])
         return "\n".join(lines)
 

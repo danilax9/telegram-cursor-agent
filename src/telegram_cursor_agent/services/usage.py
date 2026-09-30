@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram_cursor_agent.core.config import Settings
 
 CURSOR_API_BASE = "https://api2.cursor.sh"
 USAGE_PATH = "/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 PLAN_INFO_PATH = "/aiserver.v1.DashboardService/GetPlanInfo"
+SPENDING_DASHBOARD_URL = "https://cursor.com/dashboard/spending"
 
 
 @dataclass
@@ -148,42 +150,34 @@ class CursorUsageService:
 
 
 def format_usage_message(snapshot: CursorUsageSnapshot) -> str:
-    period = (
-        f"{snapshot.billing_cycle_start.strftime('%d.%m.%Y')} — "
-        f"{snapshot.billing_cycle_end.strftime('%d.%m.%Y')}"
-    )
+    """Compact usage card: plan, pools and progress only."""
     lines = [
-        f"*Лимиты Cursor — {snapshot.plan_name}*",
+        f"*Лимиты Cursor {snapshot.plan_name}*",
         "",
-        f"Период: {period}",
+        f"*{snapshot.cursor_models.label}*",
+        _format_percent(snapshot.cursor_models.percent_used),
+        "",
+        f"*{snapshot.other_models.label}*",
+        _format_percent(snapshot.other_models.percent_used),
+        "",
+        "*Общий included usage*",
+        _format_percent(snapshot.total_percent_used),
     ]
-    if snapshot.plan_price:
-        lines.append(f"Тариф: {snapshot.plan_price}")
-    if snapshot.included_amount_usd is not None:
-        lines.append(f"Included usage: ${snapshot.included_amount_usd:.2f}")
+    return "\n".join(lines)
 
-    lines.extend(
-        [
-            "",
-            f"*{snapshot.cursor_models.label}*",
-            _format_percent(snapshot.cursor_models.percent_used),
-            "",
-            f"*{snapshot.other_models.label}*",
-            _format_percent(snapshot.other_models.percent_used),
-            "",
-            "*Общий included usage*",
-            _format_percent(snapshot.total_percent_used),
+
+def usage_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """Dashboard link as a button: it needs a tap to be useful."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Dashboard",
+                    url=SPENDING_DASHBOARD_URL,
+                )
+            ]
         ]
     )
-
-    if snapshot.display_message:
-        lines.extend(["", f"_{snapshot.display_message}_"])
-
-    lines.extend([
-        "",
-        "[Spending dashboard](https://cursor.com/dashboard/spending)",
-    ])
-    return "\n".join(lines)
 
 
 def _format_percent(value: float) -> str:

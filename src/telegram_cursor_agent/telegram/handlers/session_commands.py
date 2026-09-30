@@ -4,7 +4,7 @@ from uuid import UUID
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,17 +21,20 @@ from telegram_cursor_agent.execution.runner import ProcessRunner
 from telegram_cursor_agent.projects.service import ProjectService
 from telegram_cursor_agent.queue.task_queue import TaskQueue
 from telegram_cursor_agent.services.actions import ActionResultType, ActionService
-from telegram_cursor_agent.telegram.session_live import (
-    REDIRECT_STATUS_TEXT,
-    relocate_live_after_user_message,
-)
 from telegram_cursor_agent.telegram.keyboards import (
+    session_actions_keyboard,
     session_delete_keyboard,
+    session_list_keyboard,
     session_resume_keyboard,
 )
+from telegram_cursor_agent.telegram.menu_input import set_menu_input
 from telegram_cursor_agent.telegram.menu_screens import (
     menu_back_keyboard,
     prepare_menu_text,
+)
+from telegram_cursor_agent.telegram.session_live import (
+    REDIRECT_STATUS_TEXT,
+    relocate_live_after_user_message,
 )
 
 router = Router()
@@ -298,6 +301,19 @@ async def cmd_delete(
     await _send_reply(message, text, settings)
 
 
+async def _sessions_screen(
+    session_service: SessionService,
+    user_id: UUID,
+    *,
+    note: str,
+) -> tuple[str, InlineKeyboardMarkup]:
+    sessions = await session_service.list_resumable(user_id)
+    active = await session_service.get_active(user_id)
+    text = f"{note}\n\n{format_session_list(sessions, active.id if active else None)}"
+    text += "\n\nНажми сессию — откроются действия, чат сам не переключится."
+    return text, session_list_keyboard(sessions)
+
+
 async def handle_session_callback(
     action: str,
     session_id: UUID,
@@ -306,6 +322,7 @@ async def handle_session_callback(
     settings: Settings,
     telegram_user_id: int,
     message: Message,
+    redis_client: Redis | None = None,  # type: ignore[type-arg]
 ) -> None:
     user = await _get_user(db, telegram_user_id)
     if user is None:
@@ -314,19 +331,47 @@ async def handle_session_callback(
 
     session_service = SessionService(db, settings)
     try:
-        if action == "resume":
-            activated = await session_service.activate(user.id, session_id)
+        if action == "menu":
+            sessions = await session_service.list_resumable(user.id)
+            agent_session = next(
+                (item for item in sessions if item.id == session_id),
+                None,
+            )
+            if agent_session is None:
+                raise SessionError("Сессия не найдена.")
             text = (
-                "*Сессия активирована*\n\n"
-                f"{format_session_line(activated, mark_active=True)}\n\n"
-                "Следующее сообщение продолжит этот чат Cursor."
+                "*Сессия*\n\n"
+                f"{format_session_line(agent_session)}\n\n"
+                "Перейти делает её активной. Удалить и переименовать чат не переключают."
+            )
+            markup = session_actions_keyboard(agent_session.id)
+        elif action == "rename":
+            if redis_client is None:
+                raise SessionError("Сейчас нельзя переименовать. Открой меню ещё раз.")
+            await set_menu_input(
+                redis_client,
+                telegram_user_id,
+                {"kind": "rename", "session_id": str(session_id)},
+            )
+            text = (
+                "*Переименовать*\n\n"
+                "Пришли новое имя одним сообщением.\n"
+                "Кнопка «Назад» отменит переименование."
+            )
+            markup = menu_back_keyboard("menu:sub:sessions")
+        elif action == "resume":
+            await session_service.activate(user.id, session_id)
+            text, markup = await _sessions_screen(
+                session_service,
+                user.id,
+                note="*Сессия активирована*",
             )
         elif action == "delete":
             deleted = await session_service.delete(user.id, session_id)
-            text = (
-                "*Сессия удалена*\n\n"
-                f"{format_session_line(deleted)}\n\n"
-                f"ID: `{short_session_id(deleted.id)}`"
+            text, markup = await _sessions_screen(
+                session_service,
+                user.id,
+                note=f"*Сессия удалена*\n{format_session_line(deleted)}",
             )
         else:
             await message.answer("Unknown action")
@@ -343,10 +388,7 @@ async def handle_session_callback(
 
     if message.reply_markup is not None:
         body = prepare_menu_text(text, settings.cursor_agent_max_output_bytes)
-        await message.edit_text(
-            body,
-            reply_markup=menu_back_keyboard("menu:sub:sessions"),
-        )
+        await message.edit_text(body, reply_markup=markup)
         return
 
     await _send_reply(message, text, settings)
