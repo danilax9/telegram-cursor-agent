@@ -278,6 +278,10 @@ class CursorAccountService:
             parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             return False
+        if target.is_dir():
+            # A directory at the auth path silently swallows copies: copy2
+            # treats it as a destination folder and writes inside it.
+            return False
         if target.is_file():
             return os.access(target, os.W_OK)
         return os.access(parent, os.W_OK)
@@ -291,6 +295,11 @@ class CursorAccountService:
             )
         target = self._settings.cursor_auth_file
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_dir():
+            raise CursorAccountError(
+                f"{target} is a directory, not an auth file. "
+                "Remove it and log in again."
+            )
         shutil.copy2(source, target)
 
     async def activate_account(self, account: CursorAccount) -> None:

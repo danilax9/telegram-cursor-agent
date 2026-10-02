@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from telegram_cursor_agent.services.cursor_accounts import CursorAccountService
+from telegram_cursor_agent.services.cursor_accounts import (
+    CursorAccountError,
+    CursorAccountService,
+)
 from telegram_cursor_agent.services.usage import CursorUsageSnapshot, UsagePool
 
 
@@ -262,3 +265,44 @@ def test_malformed_auth_file_is_not_a_login(test_settings, tmp_path: Path) -> No
 
     assert service.is_logged_in() is False
     assert service.logged_in_label() is None
+
+
+def test_activate_refuses_when_auth_path_is_a_directory(
+    test_settings, tmp_path: Path
+) -> None:
+    """A directory at the auth path must not swallow the copy silently."""
+    source = tmp_path / "acct.json"
+    source.write_text('{"accessToken":"token-a"}', encoding="utf-8")
+    registry = tmp_path / "accounts.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "auto_rotate": True,
+                "usage_threshold_percent": 95,
+                "accounts": [
+                    {
+                        "id": "default",
+                        "label": "Default",
+                        "auth_file": str(source),
+                        "priority": 0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    test_settings.cursor_accounts_file = registry
+    test_settings.cursor_accounts_dir = tmp_path / "homes"
+
+    live = tmp_path / "live" / "auth.json"
+    live.mkdir(parents=True)
+    test_settings.cursor_auth_file = live
+
+    service = CursorAccountService(test_settings)
+    account = service.get_account("default")
+
+    assert service.can_activate_accounts_locally() is False
+    with pytest.raises(CursorAccountError):
+        service.activate_account_files(account)
+    # The copy must not have landed inside the directory.
+    assert list(live.iterdir()) == []
